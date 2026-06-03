@@ -1,0 +1,790 @@
+use tokio::sync::RwLock;
+use uuid::Uuid;
+
+use crate::Storage;
+use crate::storage::types::{Entity, Index, Knowledge, KnowledgeType, Nomenclature, TargetType};
+
+use crate::Diagnostic;
+use crate::diagnostics;
+
+use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
+
+struct Inner {
+    pointer: RwLock<Uuid>,
+}
+
+#[derive(Clone)]
+pub struct KmsService {
+    inner: std::sync::Arc<Inner>,
+    storage: Storage,
+}
+
+impl KmsService {
+    pub async fn new(db_path: &str) -> Result<Self, String> {
+        let storage = Storage::new(db_path).await?;
+
+        let root_id = ensure_root_index(&storage).await?;
+
+        let inner = std::sync::Arc::new(Inner {
+            pointer: RwLock::new(root_id),
+        });
+
+        Ok(KmsService { inner, storage })
+    }
+
+    pub fn pool(&self) -> &sqlx::SqlitePool {
+        self.storage.pool()
+    }
+
+    pub async fn get_pointer(&self) -> Uuid {
+        *self.inner.pointer.read().await
+    }
+
+    async fn set_pointer(&self, id: Uuid) {
+        *self.inner.pointer.write().await = id;
+    }
+
+    pub async fn create_entity(
+        &self,
+        names: Vec<Nomenclature>,
+        definition: &str,
+    ) -> Result<Entity, String> {
+        let entity = Entity {
+            id: Uuid::new_v4(),
+            name: names,
+            definition: definition.to_string(),
+        };
+
+        self.storage
+            .entity
+            .create(&entity)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(entity)
+    }
+
+    pub async fn get_entity(&self, id: Uuid) -> Result<Entity, String> {
+        self.storage.entity.get(id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn search_entity(&self, keyword: &str) -> Result<Vec<Entity>, String> {
+        self.storage
+            .entity
+            .search_by_name(keyword)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn resolve(&self, name: &str) -> Result<Uuid, String> {
+        if let Some(entity) = self
+            .storage
+            .entity
+            .find_by_exact_name(name)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(entity.id);
+        }
+        if let Some(idx) = self
+            .storage
+            .index
+            .find_by_title(name)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(idx.id);
+        }
+        if let Some(knowledge) = self
+            .storage
+            .knowledge
+            .find_by_title(name)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(knowledge.id);
+        }
+        Err(format!("cannot resolve: {}", name))
+    }
+
+    pub async fn resolve_index(&self, name: &str) -> Result<Uuid, String> {
+        if let Some(idx) = self
+            .storage
+            .index
+            .find_by_title(name)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(idx.id);
+        }
+        Err(format!("index not found: {}", name))
+    }
+
+    pub async fn create_knowledge(
+        &self,
+        title: &str,
+        knowledge_type: KnowledgeType,
+        entities: Vec<Uuid>,
+        content: Option<String>,
+    ) -> Result<Knowledge, String> {
+        let knowledge = Knowledge {
+            id: Uuid::new_v4(),
+            title: title.to_string(),
+            knowledge_type,
+            entities,
+            content,
+        };
+
+        self.storage
+            .knowledge
+            .create(&knowledge)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(knowledge)
+    }
+
+    pub async fn get_knowledge(&self, id: Uuid) -> Result<Knowledge, String> {
+        self.storage
+            .knowledge
+            .get(id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn create_index_root(&self, title: &str) -> Result<Index, String> {
+        let id = Uuid::new_v4();
+        let entry = Index {
+            id,
+            title: Some(title.to_string()),
+            target: None,
+            target_type: TargetType::Group,
+            parent_id: None,
+            position: 0,
+        };
+
+        self.storage
+            .index
+            .create(&entry)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(entry)
+    }
+
+    pub async fn create_index(
+        &self,
+        parent_id: Uuid,
+        title: Option<String>,
+        target: Option<Uuid>,
+        target_type: Option<TargetType>,
+    ) -> Result<Index, String> {
+        let parent = self
+            .storage
+            .index
+            .get(parent_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let siblings = self
+            .storage
+            .index
+            .children_of(Some(parent_id))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let id = Uuid::new_v4();
+        let entry = Index {
+            id,
+            title,
+            target,
+            target_type: target_type.unwrap_or(TargetType::Group),
+            parent_id: Some(parent_id),
+            position: siblings.len() as i64,
+        };
+
+        self.storage
+            .index
+            .create(&entry)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(entry)
+    }
+
+    pub async fn create_index_by_ref(
+        &self,
+        parent_ref: &str,
+        title: Option<String>,
+        target_ref: Option<&str>,
+        target_type: Option<TargetType>,
+    ) -> Result<Index, String> {
+        let parent_id = self.resolve_index(parent_ref).await?;
+        let target = match target_type {
+            Some(TargetType::Knowledge) => match target_ref {
+                Some(r) => Some(self.resolve(r).await?),
+                None => None,
+            },
+            _ => None,
+        };
+        let title = title.or_else(|| target_ref.map(|s| s.to_string()));
+        self.create_index(parent_id, title, target, target_type)
+            .await
+    }
+
+    pub async fn link_orphans(
+        &self,
+        parent_ref: &str,
+        knowledge_titles: &[&str],
+    ) -> Result<Vec<String>, String> {
+        let parent_id = self.resolve_index(parent_ref).await?;
+        let mut linked = Vec::new();
+
+        for title in knowledge_titles {
+            let target_id = match self.resolve(title).await {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            let idx = self
+                .create_index(
+                    parent_id,
+                    Some(title.to_string()),
+                    Some(target_id),
+                    Some(TargetType::Knowledge),
+                )
+                .await?;
+            linked.push(idx.title.unwrap_or_else(|| title.to_string()));
+        }
+
+        Ok(linked)
+    }
+
+    pub async fn update_knowledge_by_ref(
+        &self,
+        title_ref: &str,
+        new_content: Option<&str>,
+        new_entities: Option<Vec<&str>>,
+    ) -> Result<Knowledge, String> {
+        let id = self.resolve(title_ref).await?;
+        let mut knowledge = self
+            .storage
+            .knowledge
+            .get(id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if let Some(content) = new_content {
+            knowledge.content = Some(content.to_string());
+        }
+        if let Some(entity_refs) = new_entities {
+            let mut entities = Vec::with_capacity(entity_refs.len());
+            for r in entity_refs {
+                entities.push(self.resolve(r).await?);
+            }
+            knowledge.entities = entities;
+        }
+
+        self.storage
+            .knowledge
+            .update(&knowledge)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(knowledge)
+    }
+
+    pub async fn rename_knowledge(
+        &self,
+        old_title: &str,
+        new_title: &str,
+    ) -> Result<Knowledge, String> {
+        let id = self.resolve(old_title).await?;
+        let mut knowledge = self
+            .storage
+            .knowledge
+            .get(id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let referencing_indexes = self
+            .storage
+            .index
+            .find_by_target(id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for idx in &referencing_indexes {
+            let mut updated = idx.clone();
+            updated.title = Some(new_title.to_string());
+            self.storage
+                .index
+                .update(&updated)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        knowledge.title = new_title.to_string();
+        self.storage
+            .knowledge
+            .update(&knowledge)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(knowledge)
+    }
+
+    pub async fn delete_knowledge(&self, title: &str) -> Result<(), String> {
+        let id = self.resolve(title).await?;
+
+        let referencing_indexes = self
+            .storage
+            .index
+            .find_by_target(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for idx in &referencing_indexes {
+            self.storage
+                .index
+                .downgrade_to_group(idx.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        self.storage
+            .knowledge
+            .delete(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn create_knowledge_by_ref(
+        &self,
+        title: &str,
+        knowledge_type: KnowledgeType,
+        entity_refs: Vec<&str>,
+        content: Option<String>,
+    ) -> Result<Knowledge, String> {
+        let mut entities = Vec::with_capacity(entity_refs.len());
+        for r in entity_refs {
+            entities.push(self.resolve(r).await?);
+        }
+        self.create_knowledge(title, knowledge_type, entities, content)
+            .await
+    }
+
+    pub async fn get_index(&self, id: Uuid) -> Result<Index, String> {
+        self.storage.index.get(id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn get_children(
+        &self,
+        parent_id: Option<Uuid>,
+    ) -> Result<Vec<Index>, String> {
+        self.storage
+            .index
+            .children_of(parent_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn get_entity_knowledge_under_index(
+        &self,
+        index_title: &str,
+        entity_name: &str,
+    ) -> Result<Vec<Knowledge>, String> {
+        let index_id = self.resolve_index(index_title).await?;
+        let entity_id = self.resolve(entity_name).await?;
+        let knowledge_ids = self
+            .storage
+            .index
+            .subtree_knowledge_ids(index_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut results = Vec::new();
+        for kid in knowledge_ids {
+            if let Ok(k) = self.get_knowledge(kid).await {
+                if k.entities.contains(&entity_id) {
+                    results.push(k);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    pub async fn navigate(&self, title: &str) -> Result<String, String> {
+        let current = self.get_pointer().await;
+        let node = self.get_index(current).await?;
+
+        if title == ".." {
+            if let Some(parent_id) = node.parent_id {
+                self.set_pointer(parent_id).await;
+            }
+            return self.render_location().await;
+        }
+
+        let children = self.get_children(Some(current)).await?;
+        let target = children.iter().find(|c| c.title.as_deref() == Some(title));
+        match target {
+            Some(child) => {
+                self.set_pointer(child.id).await;
+                self.render_location().await
+            }
+            None => {
+                if let Some(idx) = self
+                    .storage
+                    .index
+                    .find_by_title(title)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    self.set_pointer(idx.id).await;
+                    return self.render_location().await;
+                }
+                Err(format!("index '{}' not found", title))
+            }
+        }
+    }
+
+    pub async fn reorganize_children(
+        &self,
+        new_group_title: &str,
+        child_titles: &[String],
+    ) -> Result<String, String> {
+        let current_id = self.get_pointer().await;
+        let current_node = self.get_index(current_id).await?;
+
+        let children = self
+            .get_children(Some(current_id))
+            .await?;
+
+        let mut child_indices: Vec<Index> = Vec::new();
+        for title in child_titles {
+            let found = children
+                .iter()
+                .find(|c| c.title.as_deref() == Some(title.as_str()))
+                .ok_or_else(|| format!("'{}' is not a child of current node", title))?;
+            child_indices.push(found.clone());
+        }
+
+        let new_group = self
+            .create_index(
+                current_id,
+                Some(new_group_title.to_string()),
+                None,
+                Some(TargetType::Group),
+            )
+            .await?;
+        let new_group_id = new_group.id;
+
+        for (i, child) in child_indices.iter().enumerate() {
+            self.storage
+                .index
+                .reparent(child.id, new_group_id, i as i64)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        self.storage
+            .index
+            .reindex_positions(Some(current_id))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        self.storage
+            .index
+            .reindex_positions(Some(new_group_id))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        self.set_pointer(new_group_id).await;
+
+        self.render_location().await
+    }
+
+    pub async fn diagnose(&self) -> Result<Vec<Diagnostic>, String> {
+        diagnostics::run_diagnostics(&self.storage).await
+    }
+
+    pub async fn render_location(&self) -> Result<String, String> {
+        let current = self.get_pointer().await;
+
+        let path = self.ancestor_path(current).await?;
+        let current_id = path.last().map(|n| n.id).unwrap_or(current);
+        let children = self.get_children(Some(current_id)).await?;
+
+        let mut s = String::new();
+        for (i, node) in path.iter().enumerate() {
+            let title = node.title.as_deref().unwrap_or("(unnamed)");
+            let is_root = node.parent_id.is_none();
+            let is_current = node.id == current;
+            let is_last = i == path.len() - 1;
+
+            if i > 0 {
+                s.push_str(if is_last {
+                    "  └── "
+                } else {
+                    "  ├── "
+                });
+            } else {
+                s.push_str("## ");
+            }
+
+            if is_current {
+                s.push_str(&format!("**{}**", title));
+            } else {
+                s.push_str(title);
+            }
+
+            if is_root && i == 0 {
+                s.push_str(" (system root, read-only)");
+            }
+            s.push('\n');
+        }
+
+        if path.is_empty() {
+            s.push_str("## (pointer not initialized)\n");
+        } else if children.is_empty() {
+            s.push_str("      (empty)\n");
+        } else {
+            let last = children.len() - 1;
+            for (i, c) in children.iter().enumerate() {
+                let t = c.title.as_deref().unwrap_or("(unnamed)");
+                let connector = if i == last {
+                    "  └── "
+                } else {
+                    "  ├── "
+                };
+                let tt = match c.target_type {
+                    TargetType::Group => "",
+                    TargetType::Knowledge => " 📄",
+                };
+                s.push_str(&format!("{}{}{}{}\n", connector, t, tt, ""));
+            }
+        }
+        Ok(s)
+    }
+
+    pub async fn render_full_tree(&self) -> Result<String, String> {
+        let root = self
+            .storage
+            .index
+            .find_root()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut s = String::new();
+        let mut stack: Vec<(Index, String, String)> = vec![(root, String::new(), String::new())];
+
+        while let Some((node, indent, connector)) = stack.pop() {
+            let title = node.title.as_deref().unwrap_or("(unnamed)");
+            let is_root = node.parent_id.is_none();
+
+            if is_root {
+                s.push_str(&format!("## {} (system root)\n", title));
+            } else {
+                let tt = match node.target_type {
+                    TargetType::Group => "",
+                    TargetType::Knowledge => " 📄",
+                };
+                s.push_str(&format!("{}{}{}{}\n", indent, connector, title, tt));
+            }
+
+            let children = match self.get_children(Some(node.id)).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if children.is_empty() {
+                continue;
+            }
+
+            let n = children.len();
+            for i in (0..n).rev() {
+                let child = &children[i];
+                let is_last = i == n - 1;
+                let c_connector = if is_last { "└── " } else { "├── " };
+                let branch = if is_last { "   " } else { "│  " };
+                let c_indent = if is_root {
+                    branch.to_string()
+                } else {
+                    format!("{}{}", indent, branch)
+                };
+                stack.push((child.clone(), c_indent, c_connector.to_string()));
+            }
+        }
+
+        Ok(s)
+    }
+
+    async fn ancestor_path(&self, target_id: Uuid) -> Result<Vec<Index>, String> {
+        let mut path = Vec::new();
+        let mut id = target_id;
+        loop {
+            let node = self.get_index(id).await?;
+            let parent_id = node.parent_id;
+            path.push(node);
+            match parent_id {
+                Some(pid) => id = pid,
+                None => {
+                    path.reverse();
+                    return Ok(path);
+                }
+            }
+        }
+    }
+}
+
+async fn ensure_root_index(storage: &Storage) -> Result<Uuid, String> {
+    use crate::storage::repo::IndexRepo;
+    use crate::storage::types::{Index, TargetType};
+
+    let existing = sqlx::query_as::<sqlx::Sqlite, (String,)>(
+        "SELECT id FROM indexes WHERE parent_id IS NULL LIMIT 1",
+    )
+    .fetch_optional(storage.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match existing {
+        Some((id_str,)) => Uuid::parse_str(&id_str).map_err(|e| e.to_string()),
+        None => {
+            let id = Uuid::new_v4();
+            let entry = Index {
+                id,
+                title: Some("Root".to_string()),
+                target: None,
+                target_type: TargetType::Group,
+                parent_id: None,
+                position: 0,
+            };
+            storage
+                .index
+                .create(&entry)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(id)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::language::Language;
+
+    fn make_name(full: &str) -> Nomenclature {
+        Nomenclature {
+            id: Uuid::new_v4(),
+            lang: Language::ZH,
+            full: full.to_string(),
+            abbr: None,
+        }
+    }
+
+    async fn setup_service() -> KmsService {
+        let pool = SqlitePoolOptions::new()
+            .max_lifetime(std::time::Duration::from_secs(1))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("migrations/sqlite")
+            .run(&pool)
+            .await
+            .unwrap();
+        KmsService {
+            inner: Arc::new(Inner {
+                pointer: RwLock::new(Uuid::nil()),
+            }),
+            storage: Storage::from_pool(pool),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_entity_crud() {
+        let svc = setup_service().await;
+        let e = svc
+            .create_entity(vec![make_name("测试实体")], "定义")
+            .await
+            .unwrap();
+        assert_eq!(e.definition, "定义");
+        assert!(!e.name.is_empty());
+        assert_eq!(e.name[0].full, "测试实体");
+
+        let got = svc.get_entity(e.id).await.unwrap();
+        assert_eq!(got.id, e.id);
+    }
+
+    #[tokio::test]
+    async fn test_knowledge_crud() {
+        let svc = setup_service().await;
+        let e = svc
+            .create_entity(vec![make_name("实体")], "定义")
+            .await
+            .unwrap();
+        let k = svc
+            .create_knowledge("标题", KnowledgeType::Aspect, vec![e.id], None)
+            .await
+            .unwrap();
+        assert_eq!(k.title, "标题");
+        assert_eq!(k.entities, vec![e.id]);
+
+        let got = svc.get_knowledge(k.id).await.unwrap();
+        assert_eq!(got.id, k.id);
+    }
+
+    #[tokio::test]
+    async fn test_index_tree() {
+        let svc = setup_service().await;
+        let _e = svc
+            .create_entity(vec![make_name("实体")], "定义")
+            .await
+            .unwrap();
+
+        let root = svc.create_index_root("根节点").await.unwrap();
+        assert!(root.parent_id.is_none());
+
+        let child = svc
+            .create_index(root.id, Some("子节点".into()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(child.parent_id, Some(root.id));
+        assert!(child.target.is_none());
+
+        let children = svc.get_children(Some(root.id)).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, child.id);
+    }
+
+    #[tokio::test]
+    async fn test_index_position_auto_increment() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("根").await.unwrap();
+        let c1 = svc
+            .create_index(root.id, Some("c1".into()), None, None)
+            .await
+            .unwrap();
+        let c2 = svc
+            .create_index(root.id, Some("c2".into()), None, None)
+            .await
+            .unwrap();
+        let c3 = svc
+            .create_index(root.id, Some("c3".into()), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(c1.position, 0);
+        assert_eq!(c2.position, 1);
+        assert_eq!(c3.position, 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_index() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("根").await.unwrap();
+        let child = svc
+            .create_index(root.id, Some("子".into()), None, None)
+            .await
+            .unwrap();
+
+        let got = svc.get_index(child.id).await.unwrap();
+        assert_eq!(got.id, child.id);
+    }
+}

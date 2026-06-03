@@ -1,0 +1,30 @@
+# Rust
+target/
+Cargo.lock
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.ipynb_checkpoints
+
+# Environment
+.env
+.envrc
+
+# IDE
+.claude/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Data / caches
+*.db
+data/
+
+# Misc
+test.json
+mcp_tree.json

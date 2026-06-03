@@ -1,0 +1,105 @@
+use crate::Language;
+use crate::storage::types::Entity;
+
+use super::{CodeDescription, Diagnostic, Severity};
+
+// ── Trait ────────────────────────────────────────────────────────
+
+pub trait EntityDiagnosticRule: Send + Sync {
+    fn check(&self, entity: &Entity) -> Option<Diagnostic>;
+    fn name(&self) -> &str;
+}
+
+// ── Rules ───────────────────────────────────────────────────────
+
+pub struct NoNomenclature;
+
+impl EntityDiagnosticRule for NoNomenclature {
+    fn check(&self, entity: &Entity) -> Option<Diagnostic> {
+        if entity.name.is_empty() {
+            Some(Diagnostic {
+                code: self.name().to_string(),
+                code_description: Some(CodeDescription {
+                    href: "kms://diagnostics/entity/no-nomenclature".to_string(),
+                }),
+                location: "(unnamed entity)".to_string(),
+                severity: Severity::Error,
+                message: "实体没有任何命名".to_string(),
+                suggested_actions: vec![
+                    "实体必须至少有一个命名 (nomenclature)".to_string(),
+                ],
+            })
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "entity.no_nomenclature"
+    }
+}
+
+pub struct EmptyDefinition;
+
+impl EntityDiagnosticRule for EmptyDefinition {
+    fn check(&self, entity: &Entity) -> Option<Diagnostic> {
+        if entity.definition.is_empty() {
+            let name = entity
+                .name
+                .first()
+                .map(|n| n.full.as_str())
+                .unwrap_or("(unnamed)");
+            Some(Diagnostic {
+                code: self.name().to_string(),
+                code_description: Some(CodeDescription {
+                    href: "kms://diagnostics/entity/empty-definition".to_string(),
+                }),
+                location: name.to_string(),
+                severity: Severity::Warning,
+                message: "实体定义为空".to_string(),
+                suggested_actions: vec![
+                    "使用 kms_update_entity 补充实体的定义".to_string(),
+                ],
+            })
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "entity.empty_definition"
+    }
+}
+
+pub struct MissingZhNomenclature;
+
+impl EntityDiagnosticRule for MissingZhNomenclature {
+    fn check(&self, entity: &Entity) -> Option<Diagnostic> {
+        let has_zh = entity.name.iter().any(|n| matches!(n.lang, Language::ZH));
+        if !has_zh {
+            let name = entity
+                .name
+                .first()
+                .map(|n| n.full.as_str())
+                .unwrap_or("(unnamed)");
+            Some(Diagnostic {
+                code: self.name().to_string(),
+                code_description: Some(CodeDescription {
+                    href: "kms://diagnostics/entity/missing-zh-nomenclature".to_string(),
+                }),
+                location: name.to_string(),
+                severity: Severity::Hint,
+                message: "实体缺少中文命名".to_string(),
+                suggested_actions: vec![
+                    "为实体添加中文 (ZH) 命名".to_string(),
+                ],
+            })
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "entity.missing_zh_nomenclature"
+    }
+}

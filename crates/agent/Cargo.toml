@@ -1,0 +1,24 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+uuid = { version = "1.12", features = ["v4"] }
+llm_api = { path = "../llm_api" }
+types = { path = "../types" }
+tools = { path = "../tools" }
+kms = { path = "../kms" }
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+regex = "1"
+
+[dev-dependencies]
+dotenvy.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

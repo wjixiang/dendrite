@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/types",
+  "crates/llm_api",
+  "crates/tools",
+  "crates/agent",
+  "crates/kms",
+  "crates/kms-tui",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt"] }
+thiserror = "2"
+futures = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"

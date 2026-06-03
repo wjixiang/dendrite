@@ -1,0 +1,16 @@
+[package]
+name = "kms-tui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kms-tui"
+path = "src/main.rs"
+
+[dependencies]
+kms = { path = "../kms" }
+ratatui = "0.29"
+crossterm = "0.28"
+dotenvy = "0.15.7"
+tokio = "1.52.3"
+uuid = "1"

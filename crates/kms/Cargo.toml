@@ -1,0 +1,23 @@
+[package]
+name = "kms"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = "0.9.0"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+uuid = { version = "1.23.2", features = ["v4"] }
+
+[features]
+default = ["sqlite"]
+sqlite = ["sqlx/sqlite", "sqlx/runtime-tokio"]
+
+[[bin]]
+name = "kms_tree"
+path = "src/bin/kms_tree.rs"
