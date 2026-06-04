@@ -79,7 +79,7 @@ impl KnowledgeDiagnosticRule for VagueTitle {
 
         let matched = VAGUE_TITLE_KEYWORDS
             .iter()
-            .find(|&&keyword| suffix == keyword)?;
+            .find(|&&keyword| suffix.contains(keyword))?;
 
         Some(Diagnostic {
             code: self.name().to_string(),

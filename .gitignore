@@ -28,3 +28,4 @@ data/
 # Misc
 test.json
 mcp_tree.json
+*.txt

@@ -407,38 +407,65 @@ impl KmsService {
         Ok(results)
     }
 
-    pub async fn navigate(&self, title: &str) -> Result<String, String> {
+    pub async fn navigate(&self, path: &str) -> Result<String, String> {
         let current = self.get_pointer().await;
-        let node = self.get_index(current).await?;
 
-        if title == ".." {
+        if path == ".." {
+            let node = self.get_index(current).await?;
             if let Some(parent_id) = node.parent_id {
                 self.set_pointer(parent_id).await;
             }
             return self.render_location().await;
         }
 
-        let children = self.get_children(Some(current)).await?;
-        let target = children.iter().find(|c| c.title.as_deref() == Some(title));
-        match target {
-            Some(child) => {
-                self.set_pointer(child.id).await;
-                self.render_location().await
+        let (base_id, segments) = if path.starts_with('/') {
+            let root = self
+                .storage
+                .index
+                .find_root()
+                .await
+                .map_err(|e| e.to_string())?;
+            (root.id, path[1..].split('/').collect::<Vec<_>>())
+        } else if path.starts_with("../") {
+            let node = self.get_index(current).await?;
+            match node.parent_id {
+                Some(pid) => (pid, path[3..].split('/').collect::<Vec<_>>()),
+                None => return Err("already at root, cannot go to parent".into()),
             }
-            None => {
-                if let Some(idx) = self
-                    .storage
-                    .index
-                    .find_by_title(title)
-                    .await
-                    .map_err(|e| e.to_string())?
-                {
-                    self.set_pointer(idx.id).await;
-                    return self.render_location().await;
+        } else if path.contains('/') {
+            (current, path.split('/').collect::<Vec<_>>())
+        } else {
+            (current, vec![path])
+        };
+
+        let mut pointer = base_id;
+        for seg in segments {
+            let seg = seg.trim();
+            if seg.is_empty() {
+                continue;
+            }
+            if seg == ".." {
+                let node = self.get_index(pointer).await?;
+                match node.parent_id {
+                    Some(pid) => pointer = pid,
+                    None => return Err("already at root, cannot go to parent".into()),
                 }
-                Err(format!("index '{}' not found", title))
+            } else {
+                let children = self.get_children(Some(pointer)).await?;
+                match children.iter().find(|c| c.title.as_deref() == Some(seg)) {
+                    Some(child) => pointer = child.id,
+                    None => {
+                        return Err(format!(
+                            "segment '{}' not found as child of current node",
+                            seg
+                        ))
+                    }
+                }
             }
         }
+
+        self.set_pointer(pointer).await;
+        self.render_location().await
     }
 
     pub async fn reorganize_children(
@@ -495,6 +522,68 @@ impl KmsService {
         self.set_pointer(new_group_id).await;
 
         self.render_location().await
+    }
+
+    pub async fn move_index(&self, index_title: &str, new_parent_title: &str) -> Result<String, String> {
+        let idx = self
+            .storage
+            .index
+            .find_by_title(index_title)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("index '{}' not found", index_title))?;
+
+        if idx.parent_id.is_none() {
+            return Err("cannot move the root index".into());
+        }
+
+        let new_parent = self
+            .storage
+            .index
+            .find_by_title(new_parent_title)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("new parent '{}' not found", new_parent_title))?;
+
+        if idx.parent_id == Some(new_parent.id) {
+            return Err(format!("'{}' is already under '{}'", index_title, new_parent_title));
+        }
+
+        let old_parent_id = idx.parent_id;
+
+        let target_children = self
+            .storage
+            .index
+            .children_of(Some(new_parent.id))
+            .await
+            .map_err(|e| e.to_string())?;
+        let new_position = target_children.len() as i64;
+
+        self.storage
+            .index
+            .reparent(idx.id, new_parent.id, new_position)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if let Some(oid) = old_parent_id {
+            self.storage
+                .index
+                .reindex_positions(Some(oid))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        self.storage
+            .index
+            .reindex_positions(Some(new_parent.id))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let location = self.render_location().await?;
+        Ok(format!(
+            "moved '{}' under '{}'\n{}",
+            index_title, new_parent_title, location
+        ))
     }
 
     pub async fn diagnose(&self) -> Result<Vec<Diagnostic>, String> {

@@ -13,6 +13,7 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegis
         create_index(svc.clone()),
         navigate_index(svc.clone()),
         reorganize_children(svc.clone()),
+        move_index(svc.clone()),
         link_orphans(svc.clone()),
         update_knowledge(svc.clone()),
         rename_knowledge(svc.clone()),
@@ -229,9 +230,9 @@ fn create_index(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
 fn navigate_index(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_navigate",
-        "Navigate the index pointer. Use a child title to descend, or '..' to go to parent.",
+        "Navigate the index pointer. Supports single segment, relative paths with '..', and absolute paths starting with '/'.\nExamples:\n- '心力衰竭' — descend into a child node\n- '..' — go to parent\n- '../心力衰竭' — go to parent then descend into '心力衰竭'\n- '/循环系统疾病/心力衰竭' — absolute path from root",
     )
-    .parameter("target", "string", "Title of child index to navigate to, or '..' for parent")
+    .parameter("target", "string", "Navigation target: child title, '..', relative path like '../心力衰竭', or absolute path like '/循环系统疾病/心力衰竭'")
     .required("target")
     .build();
 
@@ -288,6 +289,38 @@ fn reorganize_children(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistr
                     "reorganize_children",
                     serde_json::json!({ "location": location }),
                 ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn move_index(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_move_index",
+        "Move an index node (and its entire subtree) to a new parent. Use this to restructure the tree without creating duplicates.",
+    )
+    .parameter("index_title", "string", "Title of the index to move")
+    .parameter("new_parent_title", "string", "Title of the new parent index to move under")
+    .required("index_title")
+    .required("new_parent_title")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let index_title = input["index_title"]
+                    .as_str()
+                    .ok_or("missing 'index_title'")?;
+                let new_parent_title = input["new_parent_title"]
+                    .as_str()
+                    .ok_or("missing 'new_parent_title'")?;
+
+                let result = svc.move_index(index_title, new_parent_title).await?;
+
+                Ok(ToolResult::success("move_index", &result))
             })
         })),
         vec![],
