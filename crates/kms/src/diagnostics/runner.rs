@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
 use crate::Storage;
+use crate::diagnostics::knowledge_rules::{NestedKnowledge, VagueTitle};
 use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
 use crate::storage::types::Index;
 use uuid::Uuid;
 
-use super::{CodeDescription, Diagnostic, Severity};
 use super::entity_rules::EntityDiagnosticRule;
 use super::index_rules::IndexDiagnosticRule;
 use super::knowledge_rules::KnowledgeDiagnosticRule;
+use super::{CodeDescription, Diagnostic, Severity};
 
 // ── Index ────────────────────────────────────────────────────────
 
@@ -71,6 +72,8 @@ async fn run_knowledge_diagnostics(
         Box::new(EmptyContent),
         Box::new(NoEntities),
         Box::new(TitleMissingEntityPrefix),
+        Box::new(NestedKnowledge),
+        Box::new(VagueTitle),
     ];
 
     let mut issues: Vec<Diagnostic> = Vec::new();
@@ -99,38 +102,30 @@ async fn run_knowledge_diagnostics(
         }
     }
 
-    let all_titles: Vec<String> =
-        sqlx::query_as::<sqlx::Sqlite, (String,)>("SELECT title FROM knowledges")
-            .fetch_all(storage.pool())
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|(t,)| t)
-            .collect();
+    let all_knowledges = storage
+        .knowledge
+        .list_all()
+        .await
+        .map_err(|e| e.to_string())?;
 
-    for title in &all_titles {
-        let knowledge = match storage.knowledge.find_by_title(title).await {
-            Ok(Some(k)) => k,
-            _ => continue,
-        };
-
+    for k in all_knowledges {
         let location = knowledge_location
-            .get(&knowledge.id)
+            .get(&k.id)
             .cloned()
-            .unwrap_or_else(|| format!("(orphan) {}", knowledge.title));
+            .unwrap_or_else(|| format!("(orphan) {}", k.title));
 
         for rule in &rules {
-            if let Some(mut d) = rule.check(&knowledge) {
+            if let Some(mut d) = rule.check(&k) {
                 d.location = location.clone();
                 issues.push(d);
             }
         }
 
-        if orphan_titles.contains(title) {
+        if orphan_titles.contains(&k.title) {
             let orphan_location = knowledge_location
-                .get(&knowledge.id)
+                .get(&k.id)
                 .cloned()
-                .unwrap_or_else(|| format!("(orphan) {}", knowledge.title));
+                .unwrap_or_else(|| format!("(orphan) {}", k.title));
             issues.push(Diagnostic {
                 code: "knowledge.orphan".to_string(),
                 code_description: Some(CodeDescription {

@@ -1,6 +1,9 @@
+use std::sync::LazyLock;
+
 use crate::storage::types::Knowledge;
 
 use super::{CodeDescription, Diagnostic, Severity};
+use regex::Regex;
 
 // ── Trait ────────────────────────────────────────────────────────
 
@@ -10,6 +13,96 @@ pub trait KnowledgeDiagnosticRule: Send + Sync {
 }
 
 // ── Rules ───────────────────────────────────────────────────────
+
+pub struct NestedKnowledge;
+
+static HEADING_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#{1,6} .+").unwrap());
+
+const VAGUE_TITLE_KEYWORDS: &[&str] = &[
+    "概述",
+    "总结",
+    "小结",
+    "定义",
+    "简介",
+    "说明",
+    "介绍",
+    "基本概念",
+];
+
+impl KnowledgeDiagnosticRule for NestedKnowledge {
+    fn check(&self, knowledge: &Knowledge) -> Option<Diagnostic> {
+        // let mut options = Options::empty();
+        // let parser = Parser::new_ext(
+        //     knowledge.content.clone().unwrap_or("".to_string()).as_str(),
+        //     options,
+        // );
+
+        let content = knowledge.content.as_deref().unwrap_or("");
+        let headings: Vec<&str> = HEADING_RE.find_iter(content).map(|m| m.as_str()).collect();
+
+        if headings.len() > 1 {
+            Some(Diagnostic {
+                code: self.name().to_string(),
+                code_description: Some(CodeDescription {
+                    href: "kms://diagnostics/knowledge/internal-nested".to_string(),
+                }),
+                location: knowledge.title.clone(),
+                severity: Severity::Warning,
+                message: "知识条目内容包含多级标题嵌套".to_string(),
+                suggested_actions: vec![
+                    "知识条目内容应保持扁平结构，仅使用单一标题层级".to_string(),
+                    "将嵌套的知识层级转移到 index 索引树中，使用 kms_create_index 创建子节点"
+                        .to_string(),
+                    "每个 index 节点应对应一个独立、针对性的知识条目".to_string(),
+                ],
+            })
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        "knowledge.internal_nested"
+    }
+}
+
+pub struct VagueTitle;
+
+impl KnowledgeDiagnosticRule for VagueTitle {
+    fn check(&self, knowledge: &Knowledge) -> Option<Diagnostic> {
+        // 提取标题中实体名之后的部分（" · " 分隔符之后）
+        let suffix = knowledge
+            .title
+            .split(" · ")
+            .nth(1)
+            .unwrap_or(&knowledge.title);
+
+        let matched = VAGUE_TITLE_KEYWORDS
+            .iter()
+            .find(|&&keyword| suffix == keyword)?;
+
+        Some(Diagnostic {
+            code: self.name().to_string(),
+            code_description: Some(CodeDescription {
+                href: "kms://diagnostics/knowledge/vague-title".to_string(),
+            }),
+            location: knowledge.title.clone(),
+            severity: Severity::Warning,
+            message: format!("知识标题包含模糊描述 \"{}\"，缺乏针对性", matched),
+            suggested_actions: vec![
+                format!(
+                    "将 \"{}\" 替换为更具体的方面描述，如 \"药物治疗\"、\"发病机制\"",
+                    matched
+                ),
+                "知识条目标题应清晰表达该条目涵盖的具体内容".to_string(),
+            ],
+        })
+    }
+
+    fn name(&self) -> &str {
+        "knowledge.vague_title"
+    }
+}
 
 pub struct OrphanKnowledge;
 

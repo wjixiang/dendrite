@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 async-trait = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
+pulldown-cmark = "0.13.4"
+regex = "1.12.3"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -17,7 +19,3 @@ uuid = { version = "1.23.2", features = ["v4"] }
 [features]
 default = ["sqlite"]
 sqlite = ["sqlx/sqlite", "sqlx/runtime-tokio"]
-
-[[bin]]
-name = "kms_tree"
-path = "src/bin/kms_tree.rs"

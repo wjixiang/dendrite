@@ -206,8 +206,7 @@ async fn import_textbook() {
 
     let textbook_path =
         env::var("TEXTBOOK_PATH").unwrap_or_else(|_| "data/内科学_第10版.md".to_string());
-    let kms_db_path =
-        env::var("KMS_SQLITE_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
+    let kms_db_path = env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
     let chapter_filter = env::var("CHAPTER_FILTER").unwrap_or_default();
 
     // 读取课本

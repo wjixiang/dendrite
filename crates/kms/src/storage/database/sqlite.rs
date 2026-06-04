@@ -45,6 +45,46 @@ struct KnowledgeRow {
     content: Option<String>,
 }
 
+#[derive(Debug)]
+enum RowConvertError {
+    InvalidUuid(uuid::Error),
+}
+
+impl std::fmt::Display for RowConvertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RowConvertError::InvalidUuid(e) => write!(f, "invalid uuid: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RowConvertError {}
+
+fn row_convert_to_storage_err(e: RowConvertError) -> StorageError {
+    StorageError::Database(sqlx::Error::Configuration(e.into()))
+}
+
+impl TryFrom<KnowledgeRow> for Knowledge {
+    type Error = RowConvertError;
+
+    fn try_from(value: KnowledgeRow) -> Result<Knowledge, RowConvertError> {
+        let id = Uuid::parse_str(&value.id).map_err(RowConvertError::InvalidUuid)?;
+        let entities: Vec<Uuid> = value
+            .entities
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        Ok(Knowledge {
+            id,
+            title: value.title,
+            knowledge_type: KnowledgeType::convert_from_str(&value.knowledge_type),
+            entities,
+            content: value.content,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct SqliteEntityRepo {
     pool: Pool<Sqlite>,
@@ -356,6 +396,15 @@ impl KnowledgeRepo for SqliteKnowledgeRepo {
 
         Ok(())
     }
+
+    async fn list_all(&self) -> Result<Vec<Knowledge>, StorageError> {
+        let rows: Vec<KnowledgeRow> = sqlx::query_as("SELECT * FROM knowledges")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Knowledge::try_from(r).map_err(row_convert_to_storage_err))
+            .collect()
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -490,10 +539,7 @@ impl IndexRepo for SqliteIndexRepo {
         Ok(())
     }
 
-    async fn children_of(
-        &self,
-        parent_id: Option<Uuid>,
-    ) -> Result<Vec<Index>, StorageError> {
+    async fn children_of(&self, parent_id: Option<Uuid>) -> Result<Vec<Index>, StorageError> {
         let rows = match parent_id {
             Some(pid) => {
                 sqlx::query_as::<Sqlite, IndexRow>(
@@ -577,10 +623,7 @@ impl IndexRepo for SqliteIndexRepo {
         Ok(())
     }
 
-    async fn reindex_positions(
-        &self,
-        parent_id: Option<Uuid>,
-    ) -> Result<(), StorageError> {
+    async fn reindex_positions(&self, parent_id: Option<Uuid>) -> Result<(), StorageError> {
         let children = self.children_of(parent_id).await?;
         for (i, child) in children.into_iter().enumerate() {
             let pos = i as i64;
@@ -921,12 +964,7 @@ mod tests {
         }
     }
 
-    fn make_knowledge_entry(
-        id: Uuid,
-        parent_id: Uuid,
-        target: Uuid,
-        position: i64,
-    ) -> Index {
+    fn make_knowledge_entry(id: Uuid, parent_id: Uuid, target: Uuid, position: i64) -> Index {
         Index {
             id,
             title: None,
@@ -995,9 +1033,7 @@ mod tests {
         let repo = setup_index_repo().await;
         let id = Uuid::new_v4();
 
-        repo.create(&make_group_entry(id, "test", 0))
-            .await
-            .unwrap();
+        repo.create(&make_group_entry(id, "test", 0)).await.unwrap();
         repo.delete(id).await.unwrap();
 
         let err = repo.get(id).await.unwrap_err();
@@ -1088,15 +1124,9 @@ mod tests {
         let c = Uuid::new_v4();
 
         // insert out of order: position 2, 0, 1
-        repo.create(&make_group_entry(a, "B", 2))
-            .await
-            .unwrap();
-        repo.create(&make_group_entry(b, "A", 0))
-            .await
-            .unwrap();
-        repo.create(&make_group_entry(c, "C", 1))
-            .await
-            .unwrap();
+        repo.create(&make_group_entry(a, "B", 2)).await.unwrap();
+        repo.create(&make_group_entry(b, "A", 0)).await.unwrap();
+        repo.create(&make_group_entry(c, "C", 1)).await.unwrap();
 
         let children = repo.children_of(None).await.unwrap();
         assert_eq!(children.len(), 3);
