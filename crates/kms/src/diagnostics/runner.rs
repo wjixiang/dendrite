@@ -25,6 +25,13 @@ async fn run_index_diagnostics(
     let mut path_map = HashMap::new();
 
     let root = storage.index.find_root().await.map_err(|e| e.to_string())?;
+    let all_nodes = storage.index.list_all().await.map_err(|e| e.to_string())?;
+
+    let mut children_map: HashMap<Option<Uuid>, Vec<Index>> = HashMap::new();
+    for node in &all_nodes {
+        children_map.entry(node.parent_id).or_default().push(node.clone());
+    }
+
     let mut stack: Vec<(Index, usize, Vec<String>)> = vec![(root, 0, vec![])];
 
     while let Some((node, depth, path)) = stack.pop() {
@@ -38,10 +45,7 @@ async fn run_index_diagnostics(
         let location = current_path.join(" > ");
         path_map.insert(node.id, location.clone());
 
-        let children = match storage.index.children_of(Some(node.id)).await {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        let children = children_map.get(&Some(node.id)).cloned().unwrap_or_default();
 
         for rule in &rules {
             if let Some(d) = rule.check(&node, depth, &location, &children) {
@@ -84,7 +88,6 @@ async fn run_knowledge_diagnostics(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Build knowledge_id → index_path reverse mapping
     let linking_rows: Vec<(String, String)> = sqlx::query_as::<sqlx::Sqlite, (String, String)>(
         "SELECT id, target FROM indexes WHERE target_type = 'knowledge' AND target IS NOT NULL",
     )
@@ -157,18 +160,13 @@ async fn run_entity_diagnostics(storage: &Storage) -> Result<Vec<Diagnostic>, St
 
     let mut issues: Vec<Diagnostic> = Vec::new();
 
-    let rows = sqlx::query_as::<sqlx::Sqlite, (String,)>("SELECT id FROM entities")
-        .fetch_all(storage.pool())
+    let all_entities = storage
+        .entity
+        .list_all()
         .await
         .map_err(|e| e.to_string())?;
 
-    for (id_str,) in rows {
-        let id = Uuid::parse_str(&id_str).map_err(|e| e.to_string())?;
-        let entity = match storage.entity.get(id).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
+    for entity in all_entities {
         for rule in &rules {
             if let Some(d) = rule.check(&entity) {
                 issues.push(d);

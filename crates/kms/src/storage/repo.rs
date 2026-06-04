@@ -8,6 +8,7 @@ use crate::storage::{
 pub trait EntityRepo {
     async fn create(&self, entity: &Entity) -> Result<Uuid, StorageError>;
     async fn get(&self, id: Uuid) -> Result<Entity, StorageError>;
+    async fn list_all(&self) -> Result<Vec<Entity>, StorageError>;
     async fn search_by_name(&self, keyword: &str) -> Result<Vec<Entity>, StorageError>;
     async fn find_by_exact_name(&self, name: &str) -> Result<Option<Entity>, StorageError>;
     async fn update(&self, entity: &Entity) -> Result<(), StorageError>;
@@ -27,6 +28,7 @@ pub trait KnowledgeRepo {
 pub trait IndexRepo {
     async fn create(&self, entry: &Index) -> Result<Uuid, StorageError>;
     async fn get(&self, id: Uuid) -> Result<Index, StorageError>;
+    async fn list_all(&self) -> Result<Vec<Index>, StorageError>;
     async fn find_by_title(&self, title: &str) -> Result<Option<Index>, StorageError>;
     async fn find_root(&self) -> Result<Index, StorageError>;
     async fn update(&self, entry: &Index) -> Result<(), StorageError>;

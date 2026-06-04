@@ -34,7 +34,7 @@ async fn basic_agent() {
 
     let mut agent = Agent::builder()
         .with_model_pool(Arc::new(pool))
-        .with_kms_path("data/deepmem.db")
+        .with_kms_path("data/kms_sqlite.db")
         .build()
         .await
         .unwrap();

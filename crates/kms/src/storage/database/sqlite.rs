@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sqlx::{Pool, Sqlite};
 use uuid::Uuid;
 
@@ -9,7 +11,7 @@ use crate::storage::{
 };
 
 pub async fn init_sqlite() -> Result<Pool<Sqlite>, StorageError> {
-    let pool = sqlx::sqlite::SqlitePool::connect("sqlite://data/deepmem.db?mode=rwc").await?;
+    let pool = sqlx::sqlite::SqlitePool::connect("sqlite://data/kms_sqlite.db?mode=rwc").await?;
     Ok(pool)
 }
 
@@ -156,6 +158,46 @@ impl EntityRepo for SqliteEntityRepo {
             name,
             definition: row.definition,
         })
+    }
+
+    async fn list_all(&self) -> Result<Vec<Entity>, StorageError> {
+        let entity_rows: Vec<EntityRow> =
+            sqlx::query_as::<Sqlite, EntityRow>("SELECT id, definition FROM entities")
+                .fetch_all(&self.pool)
+                .await?;
+
+        let nom_rows: Vec<NomenclatureRow> = sqlx::query_as::<Sqlite, NomenclatureRow>(
+            "SELECT id, entity_id, lang, full, abbr FROM nomenclatures",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut nom_map: HashMap<String, Vec<Nomenclature>> = HashMap::new();
+        for nr in nom_rows {
+            let nomenclature = Nomenclature {
+                id: Uuid::parse_str(&nr.id).unwrap(),
+                lang: match nr.lang.as_str() {
+                    "EN" => Language::EN,
+                    "ZH" => Language::ZH,
+                    _ => continue,
+                },
+                full: nr.full,
+                abbr: nr.abbr,
+            };
+            nom_map.entry(nr.entity_id).or_default().push(nomenclature);
+        }
+
+        entity_rows
+            .into_iter()
+            .map(|r| {
+                let id = Uuid::parse_str(&r.id).unwrap();
+                Ok(Entity {
+                    id,
+                    name: nom_map.remove(&r.id).unwrap_or_default(),
+                    definition: r.definition,
+                })
+            })
+            .collect()
     }
 
     async fn search_by_name(&self, keyword: &str) -> Result<Vec<Entity>, StorageError> {
@@ -477,6 +519,15 @@ impl IndexRepo for SqliteIndexRepo {
         .ok_or(StorageError::NotFound(id))?;
 
         Ok(row_to_index(row))
+    }
+
+    async fn list_all(&self) -> Result<Vec<Index>, StorageError> {
+        let rows: Vec<IndexRow> = sqlx::query_as::<Sqlite, IndexRow>(
+            "SELECT id, title, target, target_type, parent_id, position FROM indexes",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(|row| Ok(row_to_index(row))).collect()
     }
 
     async fn find_by_title(&self, title: &str) -> Result<Option<Index>, StorageError> {

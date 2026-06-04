@@ -15,7 +15,7 @@ use types::messages::ContentBlock;
 ///   MIMO_API_KEY=xxx cargo test -p kms_agent -- import_textbook --ignored --nocapture
 ///
 /// 环境变量:
-///   KMS_SQLITE_DB_PATH — KMS 数据库路径（默认 data/kms_sqlite.db）
+///   KMS_DB_PATH — KMS 数据库路径（默认 data/kms_sqlite.db）
 ///   TEXTBOOK_PATH      — 课本 Markdown 路径（默认 data/内科学_第10版.md）
 ///   CHAPTER_FILTER     — 可选，仅处理标题包含此关键字的章节（如 "心力衰竭"）
 #[derive(Debug)]

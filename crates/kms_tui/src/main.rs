@@ -14,16 +14,16 @@ use crossterm::{
 use kms::KmsService;
 use ratatui::{Terminal, style::Style};
 
+use crate::input::run_app;
 use crate::state::App;
 use crate::styles::style_diagnostic_line;
-use crate::input::run_app;
 
 type CrosstermBackend = ratatui::backend::CrosstermBackend<std::io::Stdout>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv_override().unwrap();
-    let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/deepmem.db".to_string());
+    let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
 
     let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
 
@@ -36,10 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initial load: knowledge tree — 栈式 DFS 遍历整棵索引树
     let root_children = app.svc.get_children(None).await?;
-    let mut stack: Vec<(kms::Index, usize)> = root_children
-        .into_iter()
-        .map(|c| (c, 0))
-        .collect();
+    let mut stack: Vec<(kms::Index, usize)> = root_children.into_iter().map(|c| (c, 0)).collect();
 
     while let Some((node, depth)) = stack.pop() {
         let title = node.title.as_deref().unwrap_or("(unnamed)");
@@ -90,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 d.code,
                 d.message
             )));
+            lines.push(style_diagnostic_line(&d.location));
             for action in &d.suggested_actions {
                 lines.push(style_diagnostic_line(&format!("  → {}", action)));
             }
