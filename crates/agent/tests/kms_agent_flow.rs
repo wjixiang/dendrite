@@ -20,10 +20,9 @@ async fn kms_agent_flow() {
     let mut pool = ModelPool::new();
     pool.add_model(mimo_model);
 
-    dbg!(env::var("KMS_SQLITE_DB_PATH").unwrap());
     let mut agent = Agent::builder()
         .with_model_pool(Arc::new(pool))
-        .with_kms_path(env::var("KMS_SQLITE_DB_PATH").unwrap_or("data/kms_sqlite.db".to_string()))
+        .with_kms_path(env::var("KMS_DB_PATH").unwrap_or("data/kms_sqlite.db".to_string()))
         .build()
         .await
         .unwrap();
