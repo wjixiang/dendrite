@@ -1,7 +1,3 @@
-pub mod entity_rules;
-pub mod index_rules;
-pub mod knowledge_rules;
-
 use std::collections::HashMap;
 
 use crate::Storage;
@@ -9,52 +5,20 @@ use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
 use crate::storage::types::Index;
 use uuid::Uuid;
 
-// ── Types ───────────────────────────────────────────────────────
+use super::{CodeDescription, Diagnostic, Severity};
+use super::entity_rules::EntityDiagnosticRule;
+use super::index_rules::IndexDiagnosticRule;
+use super::knowledge_rules::KnowledgeDiagnosticRule;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    Error,
-    Warning,
-    Information,
-    Hint,
-}
-
-impl Severity {
-    pub fn label(self) -> &'static str {
-        match self {
-            Severity::Error => "ERROR",
-            Severity::Warning => "WARN",
-            Severity::Information => "INFO",
-            Severity::Hint => "HINT",
-        }
-    }
-}
-
-pub struct CodeDescription {
-    pub href: String,
-}
-
-/// 诊断信息数据结构体
-pub struct Diagnostic {
-    pub code: String,
-    pub code_description: Option<CodeDescription>,
-    pub location: String,
-    pub severity: Severity,
-    pub message: String,
-    pub suggested_actions: Vec<String>,
-}
-
-// ── Runner ───────────────────────────────────────────────────────
+// ── Index ────────────────────────────────────────────────────────
 
 async fn run_index_diagnostics(
     storage: &Storage,
 ) -> Result<(Vec<Diagnostic>, HashMap<Uuid, String>), String> {
-    use index_rules::{EmptyLeaf, ExcessiveChildren, IndexDiagnosticRule};
+    use super::index_rules::{EmptyLeaf, ExcessiveChildren};
 
-    let rules: Vec<Box<dyn IndexDiagnosticRule>> = vec![
-        Box::new(EmptyLeaf),
-        Box::new(ExcessiveChildren),
-    ];
+    let rules: Vec<Box<dyn IndexDiagnosticRule>> =
+        vec![Box::new(EmptyLeaf), Box::new(ExcessiveChildren)];
 
     let mut issues = Vec::new();
     let mut path_map = HashMap::new();
@@ -92,13 +56,14 @@ async fn run_index_diagnostics(
     Ok((issues, path_map))
 }
 
+// ── Knowledge ───────────────────────────────────────────────────
+
 async fn run_knowledge_diagnostics(
     storage: &Storage,
     index_path_map: &HashMap<Uuid, String>,
 ) -> Result<Vec<Diagnostic>, String> {
-    use knowledge_rules::{
+    use super::knowledge_rules::{
         EmptyContent, NoEntities, OrphanKnowledge, TitleMissingEntityPrefix,
-        KnowledgeDiagnosticRule,
     };
 
     let rules: Vec<Box<dyn KnowledgeDiagnosticRule>> = vec![
@@ -134,15 +99,14 @@ async fn run_knowledge_diagnostics(
         }
     }
 
-    let all_titles: Vec<String> = sqlx::query_as::<sqlx::Sqlite, (String,)>(
-        "SELECT title FROM knowledges",
-    )
-    .fetch_all(storage.pool())
-    .await
-    .map_err(|e| e.to_string())?
-    .into_iter()
-    .map(|(t,)| t)
-    .collect();
+    let all_titles: Vec<String> =
+        sqlx::query_as::<sqlx::Sqlite, (String,)>("SELECT title FROM knowledges")
+            .fetch_all(storage.pool())
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(t,)| t)
+            .collect();
 
     for title in &all_titles {
         let knowledge = match storage.knowledge.find_by_title(title).await {
@@ -185,10 +149,10 @@ async fn run_knowledge_diagnostics(
     Ok(issues)
 }
 
-async fn run_entity_diagnostics(
-    storage: &Storage,
-) -> Result<Vec<Diagnostic>, String> {
-    use entity_rules::{EmptyDefinition, MissingZhNomenclature, NoNomenclature, EntityDiagnosticRule};
+// ── Entity ─────────────────────────────────────────────────────
+
+async fn run_entity_diagnostics(storage: &Storage) -> Result<Vec<Diagnostic>, String> {
+    use super::entity_rules::{EmptyDefinition, MissingZhNomenclature, NoNomenclature};
 
     let rules: Vec<Box<dyn EntityDiagnosticRule>> = vec![
         Box::new(NoNomenclature),
@@ -198,12 +162,10 @@ async fn run_entity_diagnostics(
 
     let mut issues: Vec<Diagnostic> = Vec::new();
 
-    let rows = sqlx::query_as::<sqlx::Sqlite, (String,)>(
-        "SELECT id FROM entities",
-    )
-    .fetch_all(storage.pool())
-    .await
-    .map_err(|e| e.to_string())?;
+    let rows = sqlx::query_as::<sqlx::Sqlite, (String,)>("SELECT id FROM entities")
+        .fetch_all(storage.pool())
+        .await
+        .map_err(|e| e.to_string())?;
 
     for (id_str,) in rows {
         let id = Uuid::parse_str(&id_str).map_err(|e| e.to_string())?;
@@ -222,9 +184,9 @@ async fn run_entity_diagnostics(
     Ok(issues)
 }
 
-pub async fn run_diagnostics(
-    storage: &Storage,
-) -> Result<Vec<Diagnostic>, String> {
+// ── Entry ────────────────────────────────────────────────────────
+
+pub async fn run_diagnostics(storage: &Storage) -> Result<Vec<Diagnostic>, String> {
     let mut all_issues = Vec::new();
 
     let (index_issues, index_path_map) = run_index_diagnostics(storage).await?;

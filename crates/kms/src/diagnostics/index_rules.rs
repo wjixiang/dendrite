@@ -51,40 +51,6 @@ impl IndexDiagnosticRule for EmptyLeaf {
     }
 }
 
-pub struct DeepNesting;
-
-impl IndexDiagnosticRule for DeepNesting {
-    fn check(
-        &self,
-        _node: &Index,
-        depth: usize,
-        location: &str,
-        _children: &[Index],
-    ) -> Option<Diagnostic> {
-        if depth > 4 {
-            Some(Diagnostic {
-                code: self.name().to_string(),
-                code_description: Some(CodeDescription {
-                    href: "kms://diagnostics/index/deep-nesting".to_string(),
-                }),
-                location: location.to_string(),
-                severity: Severity::Information,
-                message: format!("层级深度 {} 超过建议值 4", depth),
-                suggested_actions: vec![
-                    "将深层子节点重新组织到更高层级的分组中".to_string(),
-                    "使用 kms_reorganize_children 合并或提升过深的分支".to_string(),
-                ],
-            })
-        } else {
-            None
-        }
-    }
-
-    fn name(&self) -> &str {
-        "index.deep_nesting"
-    }
-}
-
 pub struct ExcessiveChildren;
 
 impl IndexDiagnosticRule for ExcessiveChildren {

@@ -52,7 +52,7 @@ pub enum AgentError {
     #[error("ModelPool error occured")]
     ModelPool(#[from] ModelPoolError),
 
-    #[error("ApiClient request error occured")]
+    #[error("ApiClient request error: {0}")]
     ApiRequestError(#[from] AnthropicError),
 
     #[error("Memory error occured")]

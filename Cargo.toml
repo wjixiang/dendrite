@@ -6,7 +6,7 @@ members = [
   "crates/tools",
   "crates/agent",
   "crates/kms",
-  "crates/kms-tui",
+  "crates/kms_tui",
 ]
 
 [workspace.dependencies]
@@ -16,7 +16,7 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt"] }
 thiserror = "2"
 futures = "0.3"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13.4", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"

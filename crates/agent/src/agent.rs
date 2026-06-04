@@ -146,7 +146,8 @@ impl Agent {
         if let Ok(issues) = self.kms.diagnose().await {
             self.last_diagnostic_count = issues.len();
             if !issues.is_empty() {
-                self.memory.remember(Message::user(format_diagnostics(&issues)))?;
+                self.memory
+                    .remember(Message::user(format_diagnostics(&issues)))?;
             }
         }
 
@@ -177,6 +178,7 @@ impl Agent {
                     continue;
                 }
                 Err(e) => {
+                    tracing::error!("{}", e.to_string());
                     return Err(AgentError::WorkflowFailed {
                         iteration,
                         error: Box::new(e),
