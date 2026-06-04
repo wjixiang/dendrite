@@ -119,6 +119,21 @@ impl KmsService {
         Err(format!("index not found: {}", name))
     }
 
+    /// Resolve a name to a Knowledge UUID directly, avoiding ambiguity with Index entries
+    /// that share the same title. Searches only the knowledge table.
+    pub async fn resolve_knowledge(&self, title: &str) -> Result<Uuid, String> {
+        if let Some(knowledge) = self
+            .storage
+            .knowledge
+            .find_by_title(title)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(knowledge.id);
+        }
+        Err(format!("knowledge not found: {}", title))
+    }
+
     pub async fn create_knowledge(
         &self,
         title: &str,
@@ -218,7 +233,7 @@ impl KmsService {
         let parent_id = self.resolve_index(parent_ref).await?;
         let target = match target_type {
             Some(TargetType::Knowledge) => match target_ref {
-                Some(r) => Some(self.resolve(r).await?),
+                Some(r) => Some(self.resolve_knowledge(r).await?),
                 None => None,
             },
             _ => None,
@@ -237,7 +252,7 @@ impl KmsService {
         let mut linked = Vec::new();
 
         for title in knowledge_titles {
-            let target_id = match self.resolve(title).await {
+            let target_id = match self.resolve_knowledge(title).await {
                 Ok(id) => id,
                 Err(_) => continue,
             };
@@ -261,7 +276,7 @@ impl KmsService {
         new_content: Option<&str>,
         new_entities: Option<Vec<&str>>,
     ) -> Result<Knowledge, String> {
-        let id = self.resolve(title_ref).await?;
+        let id = self.resolve_knowledge(title_ref).await?;
         let mut knowledge = self
             .storage
             .knowledge
@@ -293,7 +308,7 @@ impl KmsService {
         old_title: &str,
         new_title: &str,
     ) -> Result<Knowledge, String> {
-        let id = self.resolve(old_title).await?;
+        let id = self.resolve_knowledge(old_title).await?;
         let mut knowledge = self
             .storage
             .knowledge
@@ -328,7 +343,7 @@ impl KmsService {
     }
 
     pub async fn delete_knowledge(&self, title: &str) -> Result<(), String> {
-        let id = self.resolve(title).await?;
+        let id = self.resolve_knowledge(title).await?;
 
         let referencing_indexes = self
             .storage
