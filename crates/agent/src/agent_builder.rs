@@ -76,6 +76,7 @@ impl AgentBuilder {
             token_budget: TokenBudget::default(),
             kms,
             last_diagnostic_count: 0,
+            event_tx: None,
         })
     }
 }

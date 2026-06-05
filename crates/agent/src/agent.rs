@@ -76,11 +76,20 @@ pub struct Agent {
     pub(crate) token_budget: TokenBudget,
     pub(crate) kms: Arc<kms::KmsService>,
     pub(crate) last_diagnostic_count: usize,
+    /// Optional event channel for streaming progress to external observers.
+    pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<types::AgentUiEvent>>,
 }
 
 impl Agent {
     pub fn builder() -> crate::agent_builder::AgentBuilder {
         crate::agent_builder::AgentBuilder::new()
+    }
+
+    /// Send an event to the optional observation channel.
+    fn send_event(&self, event: types::AgentUiEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event);
+        }
     }
 
     /// Register a single tool.
@@ -138,6 +147,9 @@ impl Agent {
 
     pub async fn start(&mut self) -> Result<(), AgentError> {
         self.lifecycle.set_running();
+        self.send_event(types::AgentUiEvent::LlmResponse(
+            "🤖 Agent started".to_string(),
+        ));
 
         if let Ok(location) = self.kms.render_location().await {
             self.memory.remember(Message::user(location))?;
@@ -179,6 +191,7 @@ impl Agent {
                 }
                 Err(e) => {
                     tracing::error!("{}", e.to_string());
+                    self.send_event(types::AgentUiEvent::Error(format!("{}", e)));
                     return Err(AgentError::WorkflowFailed {
                         iteration,
                         error: Box::new(e),
@@ -191,6 +204,7 @@ impl Agent {
             return Err(AgentError::MaxIterations(self.config.max_iterations));
         }
 
+        self.send_event(types::AgentUiEvent::Done);
         Ok(())
     }
 
@@ -204,9 +218,23 @@ impl Agent {
         }
 
         let context = self.build_context().await?;
+        self.send_event(types::AgentUiEvent::Requesting);
         let response_message = self.request(context).await?;
         event!(Level::INFO, "",);
         let last_usage = response_message.usage.clone().unwrap_or_default();
+
+        // Emit LLM text and thinking content for UI observation
+        for block in &response_message.content {
+            match block {
+                ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
+                    self.send_event(types::AgentUiEvent::Thinking(thinking.clone()));
+                }
+                ContentBlock::Text { text } if !text.is_empty() => {
+                    self.send_event(types::AgentUiEvent::LlmResponse(text.clone()));
+                }
+                _ => {}
+            }
+        }
 
         self.token_budget.latest_usage = last_usage.input_tokens + last_usage.output_tokens;
 
@@ -220,8 +248,31 @@ impl Agent {
 
         let pointer_before = self.kms.get_pointer().await;
 
+        for tc in &toolcalls {
+            self.send_event(types::AgentUiEvent::ToolCall {
+                name: tc.name.clone(),
+                input: tc.input.clone(),
+            });
+        }
+
         let tool_results = self.toolset.execute(&toolcalls).await?;
-        dbg!(&tool_results);
+        // dbg!(&tool_results);
+
+        for tr in &tool_results {
+            let result_text: String = tr
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    ToolCallResponseContent::Text(t) => Some(t.as_str()),
+                    ToolCallResponseContent::Image(_) => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            self.send_event(types::AgentUiEvent::ToolResult {
+                ok: !tr.is_error.unwrap_or_default(),
+                content: result_text,
+            });
+        }
 
         for tr in &tool_results {
             let text: String = tr
@@ -322,7 +373,7 @@ impl Agent {
             .request(context, self.toolset.tools().as_ref())
             .await?;
 
-        dbg!(&response);
+        // dbg!(&response);
 
         Ok(response)
     }

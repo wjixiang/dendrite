@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 uuid = { version = "1.12", features = ["v4"] }
 llm_api = { path = "../llm_api" }
 types = { path = "../types" }

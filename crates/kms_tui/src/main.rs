@@ -6,12 +6,16 @@ mod tree;
 mod widgets;
 
 use std::io;
+use std::sync::Arc;
 
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use kms::KmsService;
+use llm_api::model::model_pool::ModelPool;
+use llm_api::provider::LlmProvider;
+use llm_api::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
 use ratatui::{Terminal, style::Style};
 
 use crate::input::run_app;
@@ -20,19 +24,53 @@ use crate::styles::style_diagnostic_line;
 
 type CrosstermBackend = ratatui::backend::CrosstermBackend<std::io::Stdout>;
 
+/// Initialize tracing to write all logs (sqlx, agent, etc.) to a file.
+/// Must be called before anything else to prevent log output from corrupting the TUI.
+fn init_logging() {
+    use std::fs::{create_dir_all, File};
+    let _ = create_dir_all("data");
+    let log_file = File::create("data/tui.log").expect("failed to create log file");
+    tracing_subscriber::fmt()
+        .with_writer(log_file)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::DEBUG.into()),
+        )
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // IMPORTANT: init logging FIRST, before any other crate initialization,
+    // so that all tracing events go to the log file instead of the terminal.
+    init_logging();
+
     dotenvy::dotenv_override().unwrap();
+
     let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
 
     let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
+
+    // Build ModelPool
+    let mimo_provider = MimoProvider::new(None, None, None);
+    let model = mimo_provider.get_model(MODEL_MIMO_V2_5)?;
+    let mut pool = ModelPool::new();
+    pool.add_model(model);
+
+    // Build Agent
+    let agent = agent::Agent::builder()
+        .with_model_pool(Arc::new(pool))
+        .with_kms(Arc::new(svc.clone()))
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
-    let mut app = App::new(svc);
+    let mut app = App::new(svc, Arc::new(tokio::sync::Mutex::new(agent)));
 
     // Initial load: knowledge tree — 栈式 DFS 遍历整棵索引树
     let root_children = app.svc.get_children(None).await?;

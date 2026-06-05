@@ -4,12 +4,38 @@ use uuid::Uuid;
 
 use types::tools::{ToolBuilder, ToolResult};
 
+/// Flatten nested markdown headings (##, ###, etc.) to bold-prefixed plain text
+/// to prevent `internal_nested` diagnostic warnings.
+/// e.g. "## 心脏结构" → "**心脏结构**"
+fn flatten_nested_headings(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
+        if hash_count >= 2 {
+            let text = trimmed[hash_count..].trim();
+            result.push_str("**");
+            result.push_str(text);
+            result.push_str("**\n");
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    // Preserve original trailing newline behavior
+    if !content.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
 pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegistration> {
     vec![
         create_entity(svc.clone()),
         get_entity(svc.clone()),
         search_entity(svc.clone()),
         create_knowledge(svc.clone()),
+        get_knowledge(svc.clone()),
         create_index(svc.clone()),
         navigate_index(svc.clone()),
         reorganize_children(svc.clone()),
@@ -17,7 +43,8 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegis
         link_orphans(svc.clone()),
         update_knowledge(svc.clone()),
         rename_knowledge(svc.clone()),
-        delete_knowledge(svc),
+        delete_knowledge(svc.clone()),
+        delete_index(svc),
     ]
 }
 
@@ -142,6 +169,58 @@ fn search_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
     )
 }
 
+fn get_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_get_knowledge",
+        "Get the full content of a knowledge entry by its title.",
+    )
+    .parameter("title", "string", "Title of the knowledge entry to retrieve")
+    .required("title")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let title = input["title"].as_str().ok_or("missing 'title'")?;
+                let id = svc.resolve_knowledge(title).await?;
+                let knowledge = svc.get_knowledge(id).await?;
+
+                let entity_names: Vec<String> = {
+                    let svc = svc.clone();
+                    futures::future::join_all(
+                        knowledge.entities.iter().map(|eid| {
+                            let svc = svc.clone();
+                            async move {
+                                svc.get_entity(*eid)
+                                    .await
+                                    .ok()
+                                    .and_then(|e| e.name.first().map(|n| n.full.clone()))
+                            }
+                        })
+                    )
+                    .await
+                    .into_iter()
+                    .filter_map(|n| n)
+                    .collect::<Vec<_>>()
+                };
+
+                Ok(ToolResult::success_json(
+                    "get_knowledge",
+                    serde_json::json!({
+                        "title": knowledge.title,
+                        "knowledge_type": format!("{:?}", knowledge.knowledge_type),
+                        "entities": entity_names,
+                        "content": knowledge.content,
+                    }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
 fn create_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_create_knowledge",
@@ -173,6 +252,10 @@ fn create_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistrati
                     .filter_map(|v| v.as_str())
                     .collect();
                 let content = input["content"].as_str().map(|s| s.to_string());
+
+                // Auto-flatten nested headings (##, ###, …) to **bold** to prevent
+                // internal_nested diagnostics — the index tree should carry hierarchy, not content.
+                let content = content.map(|c| flatten_nested_headings(&c));
 
                 let knowledge = svc
                     .create_knowledge_by_ref(title, knowledge_type, entity_refs, content)
@@ -464,6 +547,34 @@ fn delete_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistrati
 
                 Ok(ToolResult::success_json(
                     "delete_knowledge",
+                    serde_json::json!({ "deleted": title }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn delete_index(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_delete_index",
+        "Delete an index node by its title. Cannot delete the root index. Children of the deleted node are reparented to the deleted node's parent.",
+    )
+    .parameter("title", "string", "Title of the index to delete")
+    .required("title")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let title = input["title"].as_str().ok_or("missing 'title'")?;
+
+                svc.delete_index(title).await?;
+
+                Ok(ToolResult::success_json(
+                    "delete_index",
                     serde_json::json!({ "deleted": title }),
                 ))
             })

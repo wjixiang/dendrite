@@ -5,25 +5,22 @@ use ratatui::{
 };
 
 /// Layout constraints for the main vertical split:
-/// 70% top row, 30% bottom row, 1 row help bar.
+/// 70% top row (4 panels), 30% bottom row (1 panel), 1 row help bar.
 pub const LAYOUT_CONSTRAINTS: [Constraint; 3] = [
     Constraint::Percentage(70),
     Constraint::Percentage(30),
     Constraint::Min(1),
 ];
 
-/// Top row: Tree / Knowledge / Entity — three equal columns.
+/// Top row: Tree / KnowledgeEntity / Agent — three columns.
 pub const TOP_H_CONSTRAINTS: [Constraint; 3] = [
-    Constraint::Percentage(33),
-    Constraint::Percentage(34),
-    Constraint::Percentage(33),
+    Constraint::Percentage(30),
+    Constraint::Percentage(40),
+    Constraint::Percentage(30),
 ];
 
-/// Bottom row: Diagnostics / Agent — two equal columns.
-pub const BOTTOM_H_CONSTRAINTS: [Constraint; 2] = [
-    Constraint::Percentage(50),
-    Constraint::Percentage(50),
-];
+/// Bottom row: Diagnostics — single full-width panel.
+pub const BOTTOM_H_CONSTRAINTS: [Constraint; 1] = [Constraint::Percentage(100)];
 
 /// Help bar text shown at the bottom of the screen.
 pub fn help_text() -> Line<'static> {
@@ -43,4 +40,3 @@ pub fn help_style() -> Style {
 pub fn render_help_bar() -> ratatui::widgets::Paragraph<'static> {
     ratatui::widgets::Paragraph::new(vec![help_text()]).style(help_style())
 }
-

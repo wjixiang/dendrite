@@ -1,4 +1,5 @@
 pub mod errors;
+pub mod agent_events;
 pub mod shared;
 pub mod messages;
 pub mod models;
@@ -36,6 +37,8 @@ pub use tools::{
 };
 
 pub type Tool = ToolDefinition;
+
+pub use agent_events::AgentUiEvent;
 
 pub use batches::{
     MessageBatch, BatchStatus, BatchRequestCounts, BatchRequest, BatchRequestBuilder,

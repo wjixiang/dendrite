@@ -2,6 +2,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::Storage;
+use crate::language::Language;
 use crate::storage::types::{Entity, Index, Knowledge, KnowledgeType, Nomenclature, TargetType};
 
 use crate::Diagnostic;
@@ -316,6 +317,34 @@ impl KmsService {
             .await
             .map_err(|e| e.to_string())?;
 
+        // Check for UNIQUE constraint conflicts before renaming
+        if let Some(existing) = self
+            .storage
+            .knowledge
+            .find_by_title(new_title)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            if existing.id != id {
+                return Err(format!(
+                    "knowledge title '{}' already exists (id: {}); rename it first or choose a different title",
+                    new_title, existing.id
+                ));
+            }
+        }
+        if let Some(_) = self
+            .storage
+            .index
+            .find_by_title(new_title)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err(format!(
+                "index with title '{}' already exists; delete or rename the conflicting index first, then retry",
+                new_title
+            ));
+        }
+
         let referencing_indexes = self
             .storage
             .index
@@ -340,6 +369,51 @@ impl KmsService {
             .await
             .map_err(|e| e.to_string())?;
         Ok(knowledge)
+    }
+
+    pub async fn delete_index(&self, title: &str) -> Result<(), String> {
+        let idx = self
+            .storage
+            .index
+            .find_by_title(title)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("index '{}' not found", title))?;
+
+        if idx.parent_id.is_none() {
+            return Err("cannot delete root index".into());
+        }
+
+        // Reparent children to the deleted node's parent
+        let children = self
+            .storage
+            .index
+            .children_of(Some(idx.id))
+            .await
+            .map_err(|e| e.to_string())?;
+        for (i, child) in children.iter().enumerate() {
+            self.storage
+                .index
+                .reparent(child.id, idx.parent_id.unwrap(), i as i64)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        self.storage
+            .index
+            .delete(idx.id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if let Some(parent_id) = idx.parent_id {
+            self.storage
+                .index
+                .reindex_positions(Some(parent_id))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
     }
 
     pub async fn delete_knowledge(&self, title: &str) -> Result<(), String> {
@@ -376,7 +450,26 @@ impl KmsService {
     ) -> Result<Knowledge, String> {
         let mut entities = Vec::with_capacity(entity_refs.len());
         for r in entity_refs {
-            entities.push(self.resolve(r).await?);
+            match self.resolve(r).await {
+                Ok(id) => entities.push(id),
+                Err(_) => {
+                    // Entity not found — auto-create it with an empty definition
+                    let nomenclature = Nomenclature {
+                        id: Uuid::new_v4(),
+                        lang: Language::ZH,
+                        full: r.to_string(),
+                        abbr: None,
+                    };
+                    let entity = self
+                        .create_entity(vec![nomenclature], "")
+                        .await?;
+                    eprintln!(
+                        "[kms] auto-created entity '{}' ({}) for knowledge '{}'",
+                        r, entity.id, title
+                    );
+                    entities.push(entity.id);
+                }
+            }
         }
         self.create_knowledge(title, knowledge_type, entities, content)
             .await

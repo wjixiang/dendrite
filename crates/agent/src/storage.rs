@@ -24,7 +24,7 @@ pub struct AgentBlueprint {
 pub enum AgentSnapshotStorageError {}
 
 #[async_trait]
-pub trait AgentSnapshotStorage {
+pub trait AgentSnapshotStorage: Send + Sync {
     async fn create_snapshot(
         &self,
         snapshot: AgentSnapshot,

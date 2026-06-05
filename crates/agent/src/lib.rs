@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_builder;
+pub use agent::Agent;
 pub mod error;
 pub mod lifecycle;
 pub mod memory;
