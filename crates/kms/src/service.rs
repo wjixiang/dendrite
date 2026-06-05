@@ -515,6 +515,18 @@ impl KmsService {
         Ok(results)
     }
 
+    /// Returns all Knowledge entries that reference the given entity.
+    pub async fn get_entity_referencing_knowledge(
+        &self,
+        entity_id: Uuid,
+    ) -> Result<Vec<Knowledge>, String> {
+        self.storage
+            .knowledge
+            .find_by_entity(entity_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     pub async fn navigate(&self, path: &str) -> Result<String, String> {
         let current = self.get_pointer().await;
 

@@ -7,9 +7,8 @@ use ratatui::{
 };
 
 use crate::layout::{BOTTOM_H_CONSTRAINTS, LAYOUT_CONSTRAINTS, TOP_H_CONSTRAINTS};
-use crate::state::{App, KeTab, Panel};
+use crate::state::{App, KeTab, Panel, SettingsPane};
 
-/// Unicode braille spinner frames for animation.
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn focused_border(panel: Panel, focused: Panel) -> Style {
@@ -36,18 +35,13 @@ pub fn render_tree(items: &[ListItem<'static>], focused: Panel) -> List<'static>
         .scroll_padding(2)
 }
 
-/// Render the merged Knowledge/Entity panel with a fixed tab bar.
 pub fn render_ke(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let is_focused = app.focused == Panel::KnowledgeEntity;
     let border = focused_border(Panel::KnowledgeEntity, app.focused);
-
-    // Split into: tab bar (1 line) + scrollable content
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
 
-    // --- Fixed tab bar ---
     let (knowledge_style, entity_style) = match app.ke_tab {
         KeTab::Knowledge => (
             Style::default()
@@ -66,67 +60,55 @@ pub fn render_ke(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(" Knowledge ", knowledge_style),
         Span::styled("│", Style::default().fg(Color::DarkGray)),
         Span::styled(" Entity ", entity_style),
-        Span::styled(
-            " [t]",
-            Style::default().fg(if is_focused {
-                Color::DarkGray
-            } else {
-                Color::Black
-            }),
-        ),
+        Span::styled(" [t]", Style::default().fg(Color::DarkGray)),
     ]));
     f.render_widget(tab_line, chunks[0]);
 
-    // --- Scrollable content with border ---
     let content = match app.ke_tab {
         KeTab::Knowledge => app.knowledge_lines.clone(),
         KeTab::Entity => app.entity_lines.clone(),
     };
+    let visible_height = chunks[1].height.saturating_sub(2);
+    let content_lines = content.len() as u16;
+    let max_scroll = content_lines.saturating_sub(visible_height);
+    let scroll = app.ke_scroll.min(max_scroll);
     let block = Block::default().borders(Borders::ALL).border_style(border);
     f.render_widget(
         Paragraph::new(content)
             .block(block)
-            .scroll((app.ke_scroll, 0))
+            .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
         chunks[1],
     );
 }
 
-pub fn render_diagnostics<'a>(app: &'a App) -> Paragraph<'a> {
+pub fn render_diagnostics<'a>(app: &'a App, area: ratatui::layout::Rect) -> Paragraph<'a> {
     let block = Block::default()
         .title(" Diagnostics ")
         .borders(Borders::ALL)
         .border_style(focused_border(Panel::Diagnostics, app.focused));
+    let visible_height = area.height.saturating_sub(2);
+    let content_lines = app.diagnostic_lines.len() as u16;
+    let max_scroll = content_lines.saturating_sub(visible_height);
+    let scroll = app.scroll_diag.min(max_scroll);
     Paragraph::new(app.diagnostic_lines.clone())
         .block(block)
-        .scroll((app.scroll_diag, 0))
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
 }
 
-/// Render the Agent panel: conversation area (scrollable) + input bar (1 line).
-pub fn render_agent(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    // Split agent area into: conversation (top) + input bar (bottom 1 line)
+pub fn render_agent(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
-    // --- Conversation area ---
-    let visible_height = chunks[0].height.saturating_sub(2) as u16; // minus border
-
-    // Build content lines, appending spinner if requesting
-    let mut content = app.agent_lines.clone();
-    if app.agent_requesting {
-        let spinner_char = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
-        content.push(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(spinner_char, Style::default().fg(Color::Yellow)),
-            Span::styled(" thinking...", Style::default().fg(Color::Yellow)),
-        ]));
-    }
+    let content = app.agent_lines.clone();
     let content_lines = content.len() as u16;
-    let max_scroll = content_lines.saturating_sub(visible_height) + 2;
+    let visible_height = chunks[0].height.saturating_sub(2);
+    let max_scroll = content_lines.saturating_sub(visible_height);
     let scroll = app.agent_scroll.min(max_scroll);
+    app.agent_scroll = scroll;
 
     let conv_block = Block::default()
         .title(" Agent ")
@@ -138,15 +120,19 @@ pub fn render_agent(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .wrap(Wrap { trim: false });
     f.render_widget(conv, chunks[0]);
 
-    // --- Input bar ---
     let input_label = if app.agent_running {
-        Span::styled("  Agent running... ", Style::default().fg(Color::Yellow))
+        let spinner_char = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(spinner_char, Style::default().fg(Color::Yellow)),
+            Span::styled(" Agent running... ", Style::default().fg(Color::Yellow)),
+        ])
     } else if app.agent_input_active {
-        Span::raw(format!("> {}", app.agent_input))
+        Line::from(vec![Span::raw(format!("> {}", app.agent_input))])
     } else {
-        Span::styled("  (Enter to type)", Style::default().fg(Color::DarkGray))
+        Line::from(vec![Span::styled("  (Enter to type)", Style::default().fg(Color::DarkGray))])
     };
-    let input_line = Paragraph::new(Line::from(input_label)).style(Style::default().bg(
+    let input_line = Paragraph::new(input_label).style(Style::default().bg(
         if app.agent_input_active {
             Color::DarkGray
         } else {
@@ -155,7 +141,6 @@ pub fn render_agent(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     ));
     f.render_widget(input_line, chunks[1]);
 
-    // Set cursor position when input is active
     if app.agent_input_active && app.focused == Panel::Agent {
         let cursor_x = chunks[1].x + 2 + app.agent_input.len() as u16;
         let cursor_y = chunks[1].y;
@@ -186,6 +171,167 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     );
     render_ke(f, app, top_row[1]);
     render_agent(f, app, top_row[2]);
-    f.render_widget(render_diagnostics(app), bottom_row[0]);
+    f.render_widget(render_diagnostics(app, bottom_row[0]), bottom_row[0]);
     f.render_widget(crate::layout::render_help_bar(), vertical[2]);
+
+    if app.settings_modal_open {
+        render_settings_modal(f, app);
+    }
+}
+
+/// Render a two-pane settings modal: provider list (left) + model list (right).
+fn render_settings_modal(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let total_providers = app.providers.len().max(1);
+    let current_provider_idx = app
+        .providers
+        .iter()
+        .position(|p| p.name == app.current_provider)
+        .unwrap_or(0);
+    let current_models: &[String] = app
+        .providers
+        .get(current_provider_idx)
+        .map(|p| p.models.as_slice())
+        .unwrap_or(&[]);
+    let total_rows = total_providers.max(current_models.len()) + 4;
+
+    let width = 60.min(area.width.saturating_sub(4));
+    let height = (total_rows as u16).min(area.height.saturating_sub(2));
+    let left = (area.width.saturating_sub(width)) / 2;
+    let top = (area.height.saturating_sub(height)) / 2;
+    let modal_area = ratatui::layout::Rect::new(left, top, width, height);
+
+    // Darken background
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(Color::Black).fg(Color::Black)),
+        area,
+    );
+
+    // Modal block
+    let block = Block::default()
+        .title(" ⚙ Settings ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::DarkGray));
+    f.render_widget(block, modal_area);
+
+    let half_width = width / 2;
+    let provider_area = ratatui::layout::Rect::new(
+        modal_area.x + 1,
+        modal_area.y + 1,
+        half_width.saturating_sub(1),
+        height.saturating_sub(2),
+    );
+    let model_area = ratatui::layout::Rect::new(
+        modal_area.x + half_width,
+        modal_area.y + 1,
+        half_width.saturating_sub(2),
+        height.saturating_sub(2),
+    );
+
+    // --- Provider list (left pane) ---
+    let provider_pane_label = if app.settings_pane == SettingsPane::Provider {
+        " Providers *"
+    } else {
+        " Providers"
+    };
+    let provider_lines: Vec<Line> = app
+        .providers
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let is_selected =
+                i == app.settings_selected_provider && app.settings_pane == SettingsPane::Provider;
+            let is_active = p.name == app.current_provider;
+            let prefix = if is_active {
+                " ● "
+            } else if is_selected {
+                " > "
+            } else {
+                "   "
+            };
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!("{}{}", prefix, p.name), style))
+        })
+        .collect();
+    let provider_block = Block::default()
+        .title(provider_pane_label)
+        .borders(Borders::ALL)
+        .border_style(if app.settings_pane == SettingsPane::Provider {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+    f.render_widget(
+        Paragraph::new(provider_lines)
+            .block(provider_block)
+            .scroll((0, 0))
+            .wrap(Wrap { trim: false }),
+        provider_area,
+    );
+
+    // --- Model list (right pane) ---
+    let model_pane_label = if app.settings_pane == SettingsPane::Model {
+        " Models *"
+    } else {
+        " Models"
+    };
+    let model_lines: Vec<Line> = current_models
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let is_selected =
+                i == app.settings_selected_model && app.settings_pane == SettingsPane::Model;
+            let is_current = m == &app.current_model;
+            let prefix = if is_current {
+                " ● "
+            } else if is_selected {
+                " > "
+            } else {
+                "   "
+            };
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!("{}{}", prefix, m), style))
+        })
+        .collect();
+    let model_block = Block::default()
+        .title(model_pane_label)
+        .borders(Borders::ALL)
+        .border_style(if app.settings_pane == SettingsPane::Model {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+    f.render_widget(
+        Paragraph::new(model_lines)
+            .block(model_block)
+            .scroll((0, 0))
+            .wrap(Wrap { trim: false }),
+        model_area,
+    );
+
+    // Footer hint
+    let footer_y = modal_area.y + height - 1;
+    let footer_area = ratatui::layout::Rect::new(modal_area.x + 1, footer_y, width - 2, 1);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " [Tab] switch pane  ↑/↓ navigate  ·  [Enter] select  ·  [Esc] close",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        footer_area,
+    );
 }

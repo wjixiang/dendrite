@@ -13,6 +13,8 @@ pub struct ModelPool {
 pub enum ModelPoolError {
     #[error("None LlmProvider exist in ModelPool")]
     EmptyPool,
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
 }
 
 impl ModelPool {
@@ -46,5 +48,17 @@ impl ModelPool {
             .clone();
 
         Ok(rr_model)
+    }
+
+    pub fn get_model_by_name(&self, name: &str) -> Result<Arc<Model>, ModelPoolError> {
+        self.model_list
+            .iter()
+            .find(|m| m.model_info.model_name == name)
+            .cloned()
+            .ok_or_else(|| ModelPoolError::ModelNotFound(name.to_string()))
+    }
+
+    pub fn model_names(&self) -> Vec<String> {
+        self.model_list.iter().map(|m| m.model_info.model_name.clone()).collect()
     }
 }

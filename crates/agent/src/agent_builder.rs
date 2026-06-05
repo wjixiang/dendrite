@@ -77,6 +77,7 @@ impl AgentBuilder {
             kms,
             last_diagnostic_count: 0,
             event_tx: None,
+            current_model_name: None,
         })
     }
 }

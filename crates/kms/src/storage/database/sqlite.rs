@@ -398,6 +398,34 @@ impl KnowledgeRepo for SqliteKnowledgeRepo {
         }))
     }
 
+    async fn find_by_entity(&self, entity_id: Uuid) -> Result<Vec<Knowledge>, StorageError> {
+        let rows: Vec<KnowledgeRow> = sqlx::query_as(
+            "SELECT id, title, knowledge_type, entities, content FROM knowledges",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let entities: Vec<Uuid> = row
+                .entities
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect();
+            if entities.contains(&entity_id) {
+                results.push(Knowledge {
+                    id: Uuid::parse_str(&row.id).unwrap(),
+                    title: row.title,
+                    knowledge_type: KnowledgeType::convert_from_str(&row.knowledge_type),
+                    entities,
+                    content: row.content,
+                });
+            }
+        }
+        Ok(results)
+    }
+
     async fn update(&self, knowledge: &Knowledge) -> Result<(), StorageError> {
         let entities_str = knowledge
             .entities

@@ -26,7 +26,8 @@ pub const BOTTOM_H_CONSTRAINTS: [Constraint; 1] = [Constraint::Percentage(100)];
 pub fn help_text() -> Line<'static> {
     Line::from(vec![
         Span::styled(" [↑↓] Scroll ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Tab] Panel ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [⇧H/L] Panel ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [s] Settings ", Style::default().fg(Color::DarkGray)),
         Span::styled(" [q] Quit ", Style::default().fg(Color::DarkGray)),
     ])
 }

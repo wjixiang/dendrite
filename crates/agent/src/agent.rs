@@ -32,7 +32,7 @@ use crate::{
 };
 
 /// KMS tools that only read state and never mutate the knowledge tree.
-const READONLY_KMS_TOOLS: &[&str] = &["kms_search_entity", "kms_navigate"];
+const READONLY_KMS_TOOLS: &[&str] = &["kms_search_entity", "kms_navigate", "kms_get_entity_knowledge"];
 
 fn format_diagnostics(issues: &[Diagnostic]) -> String {
     let mut lines = vec![format!("诊断发现 {} 个问题：", issues.len())];
@@ -78,6 +78,8 @@ pub struct Agent {
     pub(crate) last_diagnostic_count: usize,
     /// Optional event channel for streaming progress to external observers.
     pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<types::AgentUiEvent>>,
+    /// Currently selected model name. If None, falls back to round-robin.
+    pub(crate) current_model_name: Option<String>,
 }
 
 impl Agent {
@@ -90,6 +92,18 @@ impl Agent {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(event);
         }
+    }
+
+    /// Switch to a different model by name. No-op if the name is not in the pool.
+    pub fn select_model(&mut self, name: &str) {
+        if self.model_pool.get_model_by_name(name).is_ok() {
+            self.current_model_name = Some(name.to_string());
+        }
+    }
+
+    /// Returns the currently selected model name, or None for round-robin.
+    pub fn current_model(&self) -> Option<&str> {
+        self.current_model_name.as_deref()
     }
 
     /// Register a single tool.
@@ -360,7 +374,11 @@ impl Agent {
         let span = span!(Level::TRACE, "API Request");
         let _enter = span.enter();
 
-        let model = self.model_pool.as_ref().get_model_roundrobin().unwrap();
+        let model = if let Some(name) = &self.current_model_name {
+            self.model_pool.get_model_by_name(name).unwrap_or_else(|_| self.model_pool.get_model_roundrobin().unwrap())
+        } else {
+            self.model_pool.get_model_roundrobin().unwrap()
+        };
 
         let est_totol_token = self.token_budget.estimate_total_token(context.len() as u64);
 

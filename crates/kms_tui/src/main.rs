@@ -1,10 +1,12 @@
 mod input;
 mod layout;
+mod settings;
 mod state;
 mod styles;
 mod tree;
 mod widgets;
 
+use std::fs;
 use std::io;
 use std::sync::Arc;
 
@@ -15,17 +17,15 @@ use crossterm::{
 use kms::KmsService;
 use llm_api::model::model_pool::ModelPool;
 use llm_api::provider::LlmProvider;
-use llm_api::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
+use llm_api::provider::mimo::MimoProvider;
 use ratatui::{Terminal, style::Style};
 
 use crate::input::run_app;
-use crate::state::App;
+use crate::state::{App, SettingsProvider};
 use crate::styles::style_diagnostic_line;
 
 type CrosstermBackend = ratatui::backend::CrosstermBackend<std::io::Stdout>;
 
-/// Initialize tracing to write all logs (sqlx, agent, etc.) to a file.
-/// Must be called before anything else to prevent log output from corrupting the TUI.
 fn init_logging() {
     use std::fs::{create_dir_all, File};
     let _ = create_dir_all("data");
@@ -39,25 +39,119 @@ fn init_logging() {
         .init();
 }
 
+const SETTINGS_FILE: &str = "data/settings.json";
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Settings {
+    provider: String,
+    model: String,
+}
+
+fn load_settings() -> Settings {
+    match fs::read_to_string(SETTINGS_FILE) {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
+}
+
+fn save_settings(provider: &str, model: &str) {
+    let settings = Settings {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&settings) {
+        let _ = fs::write(SETTINGS_FILE, json);
+    }
+}
+
+async fn discover_providers() -> Vec<SettingsProvider> {
+    let mut providers = Vec::new();
+
+    // Mimo - always available (panics if MIMO_API_KEY not set)
+    let _mimo_provider = MimoProvider::new(None, None, None);
+    let mimo_models = vec![
+        "mimo-v2.5-pro".to_string(),
+        "mimo-v2-pro".to_string(),
+        "mimo-v2.5".to_string(),
+        "mimo-v2-omni".to_string(),
+        "mimo-v2-flash".to_string(),
+    ];
+    providers.push(SettingsProvider {
+        name: "mimo".to_string(),
+        models: mimo_models,
+    });
+
+    // MiniMax
+    if std::env::var("MINIMAX_API_KEY").is_ok() && std::env::var("MINIMAX_BASE_URL").is_ok() {
+        let minimax_provider = llm_api::provider::minimax::MinimaxProvider::new(None, None, None);
+        let minimax_models = minimax_provider
+            .list_models()
+            .await
+            .map(|ms| ms.into_iter().map(|m| m.model_info.model_name).collect())
+            .unwrap_or_else(|_| vec!["MiniMax-M2.7".to_string()]);
+        providers.push(SettingsProvider {
+            name: "minimax".to_string(),
+            models: minimax_models,
+        });
+    }
+
+    providers
+}
+
+fn build_pool(provider: &str, model: &str) -> Option<ModelPool> {
+    use llm_api::provider::LlmProvider;
+    match provider {
+        "mimo" => {
+            let mimo_provider = MimoProvider::new(None, None, None);
+            let m = mimo_provider.get_model(model).ok()?;
+            let mut pool = ModelPool::new();
+            pool.add_model(m);
+            Some(pool)
+        }
+        "minimax" => {
+            let minimax_provider = llm_api::provider::minimax::MinimaxProvider::new(None, None, None);
+            let m = minimax_provider.get_model(model).ok()?;
+            let mut pool = ModelPool::new();
+            pool.add_model(m);
+            Some(pool)
+        }
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // IMPORTANT: init logging FIRST, before any other crate initialization,
-    // so that all tracing events go to the log file instead of the terminal.
     init_logging();
 
     dotenvy::dotenv_override().unwrap();
 
     let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
-
     let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
 
-    // Build ModelPool
-    let mimo_provider = MimoProvider::new(None, None, None);
-    let model = mimo_provider.get_model(MODEL_MIMO_V2_5)?;
-    let mut pool = ModelPool::new();
-    pool.add_model(model);
+    let providers = discover_providers().await;
+    if providers.is_empty() {
+        eprintln!("Error: No LLM providers available. Set MIMO_API_KEY or MINIMAX_API_KEY.");
+        std::process::exit(1);
+    }
 
-    // Build Agent
+    let settings = load_settings();
+
+    let current_provider = if providers.iter().any(|p| p.name == settings.provider) {
+        settings.provider.clone()
+    } else {
+        providers[0].name.clone()
+    };
+
+    let provider_idx = providers.iter().position(|p| p.name == current_provider).unwrap_or(0);
+    let current_model = if providers[provider_idx].models.contains(&settings.model) {
+        settings.model.clone()
+    } else {
+        providers[provider_idx].models[0].clone()
+    };
+
+    let pool = build_pool(&current_provider, &current_model)
+        .expect("Failed to build model pool for selected provider/model");
+
     let agent = agent::Agent::builder()
         .with_model_pool(Arc::new(pool))
         .with_kms(Arc::new(svc.clone()))
@@ -70,9 +164,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
-    let mut app = App::new(svc, Arc::new(tokio::sync::Mutex::new(agent)));
+    let mut app = App::new(
+        svc,
+        Arc::new(tokio::sync::Mutex::new(agent)),
+        providers,
+        current_provider.clone(),
+        current_model.clone(),
+    );
 
-    // Initial load: knowledge tree — 栈式 DFS 遍历整棵索引树
+    save_settings(&current_provider, &current_model);
+
+    // Initial load: knowledge tree
     let root_children = app.svc.get_children(None).await?;
     let mut stack: Vec<(kms::Index, usize)> = root_children.into_iter().map(|c| (c, 0)).collect();
 

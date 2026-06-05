@@ -34,6 +34,7 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegis
         create_entity(svc.clone()),
         get_entity(svc.clone()),
         search_entity(svc.clone()),
+        get_entity_knowledge(svc.clone()),
         create_knowledge(svc.clone()),
         get_knowledge(svc.clone()),
         create_index(svc.clone()),
@@ -163,6 +164,49 @@ fn search_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
                     .collect();
 
                 Ok(ToolResult::success_json("search_entity", serde_json::Value::Array(results)))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn get_entity_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_get_entity_knowledge",
+        "Get all knowledge entries that reference a given entity.",
+    )
+    .parameter("entity_name", "string", "Name of the entity to look up")
+    .required("entity_name")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let entity_name = input["entity_name"].as_str().ok_or("missing 'entity_name'")?;
+                let entity_id = svc.resolve(entity_name).await?;
+                let knowledge_list = svc.get_entity_referencing_knowledge(entity_id).await?;
+
+                let results: Vec<Value> = knowledge_list
+                    .into_iter()
+                    .map(|k| {
+                        serde_json::json!({
+                            "title": k.title,
+                            "knowledge_type": format!("{:?}", k.knowledge_type),
+                            "content": k.content,
+                        })
+                    })
+                    .collect();
+
+                Ok(ToolResult::success_json(
+                    "get_entity_knowledge",
+                    serde_json::json!({
+                        "entity": entity_name,
+                        "count": results.len(),
+                        "knowledges": results,
+                    }),
+                ))
             })
         })),
         vec![],

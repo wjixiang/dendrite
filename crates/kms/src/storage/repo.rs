@@ -21,6 +21,7 @@ pub trait KnowledgeRepo {
     // WARN: 此处在Knowledge数量很多时有OOM风险，需要在增量计算诊断系统实现后进行防护
     async fn list_all(&self) -> Result<Vec<Knowledge>, StorageError>;
     async fn find_by_title(&self, title: &str) -> Result<Option<Knowledge>, StorageError>;
+    async fn find_by_entity(&self, entity_id: Uuid) -> Result<Vec<Knowledge>, StorageError>;
     async fn update(&self, knowledge: &Knowledge) -> Result<(), StorageError>;
     async fn delete(&self, id: Uuid) -> Result<(), StorageError>;
 }

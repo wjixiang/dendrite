@@ -13,22 +13,35 @@ pub enum Panel {
     Diagnostics,
 }
 
-/// Internal tab for the merged Knowledge/Entity panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeTab {
     Knowledge,
     Entity,
 }
 
-/// Actions returned by key event handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPane {
+    Provider,
+    Model,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsProvider {
+    pub name: String,
+    pub models: Vec<String>,
+}
+
 pub enum Action {
     None,
     Quit,
     TreeChanged,
     SubmitAgent(String),
+    OpenSettings,
+    SettingsNav(SettingsPane, isize),
+    SettingsSwitchPane(SettingsPane),
+    SettingsConfirm,
 }
 
-/// Application state shared across the event loop.
 pub struct App {
     pub should_quit: bool,
     pub tree_items: Vec<ListItem<'static>>,
@@ -42,20 +55,23 @@ pub struct App {
     pub agent_scroll: u16,
     pub focused: Panel,
     pub svc: kms::KmsService,
-
-    // Internal tab for KnowledgeEntity panel
     pub ke_tab: KeTab,
     pub ke_scroll: u16,
-
-    // Agent integration fields
     pub agent: Arc<tokio::sync::Mutex<agent::Agent>>,
     pub agent_event_rx: Option<mpsc::UnboundedReceiver<types::AgentUiEvent>>,
     pub agent_running: bool,
-    pub agent_following: bool,  // auto-scroll follows bottom; false when user scrolled up
+    pub agent_following: bool,
     pub agent_requesting: bool,
     pub spinner_tick: usize,
     pub agent_input: String,
     pub agent_input_active: bool,
+    pub settings_modal_open: bool,
+    pub settings_pane: SettingsPane,
+    pub settings_selected_provider: usize,
+    pub settings_selected_model: usize,
+    pub providers: Vec<SettingsProvider>,
+    pub current_provider: String,
+    pub current_model: String,
 }
 
 impl Default for App {
@@ -65,9 +81,25 @@ impl Default for App {
 }
 
 impl App {
-    pub fn new(svc: kms::KmsService, agent: Arc<tokio::sync::Mutex<agent::Agent>>) -> Self {
+    pub fn new(
+        svc: kms::KmsService,
+        agent: Arc<tokio::sync::Mutex<agent::Agent>>,
+        providers: Vec<SettingsProvider>,
+        current_provider: String,
+        current_model: String,
+    ) -> Self {
         let mut tree_state = ListState::default();
         tree_state.select(Some(0));
+
+        let settings_selected_provider = providers
+            .iter()
+            .position(|p| p.name == current_provider)
+            .unwrap_or(0);
+        let settings_selected_model = providers
+            .get(settings_selected_provider)
+            .map(|p| p.models.iter().position(|m| m == &current_model).unwrap_or(0))
+            .unwrap_or(0);
+
         Self {
             should_quit: false,
             tree_items: vec![],
@@ -91,6 +123,13 @@ impl App {
             spinner_tick: 0,
             agent_input: String::new(),
             agent_input_active: false,
+            settings_modal_open: false,
+            settings_pane: SettingsPane::Provider,
+            settings_selected_provider,
+            settings_selected_model,
+            providers,
+            current_provider,
+            current_model,
         }
     }
 
@@ -104,10 +143,7 @@ impl App {
                                 self.knowledge_lines = vec![
                                     Line::from(format!("Title: {}", k.title)),
                                     Line::from(format!("Type: {:?}", k.knowledge_type)),
-                                    Line::from(format!(
-                                        "Entities: {}",
-                                        k.entities.len()
-                                    )),
+                                    Line::from(format!("Entities: {}", k.entities.len())),
                                     Line::from(""),
                                 ];
                                 if let Some(content) = &k.content {
@@ -115,14 +151,12 @@ impl App {
                                         self.knowledge_lines.push(Line::from(line.to_owned()));
                                     }
                                 } else {
-                                    self.knowledge_lines
-                                        .push(Line::from("(no content)"));
+                                    self.knowledge_lines.push(Line::from("(no content)"));
                                 }
                                 self.load_entity_lines(&k.entities).await;
                             }
                             Err(e) => {
-                                self.knowledge_lines =
-                                    vec![Line::from(format!("Error: {}", e))];
+                                self.knowledge_lines = vec![Line::from(format!("Error: {}", e))];
                                 self.entity_lines = vec![Line::from("")];
                             }
                         }
@@ -162,5 +196,76 @@ impl App {
             }
         }
         self.entity_lines = lines;
+    }
+
+    pub async fn refresh_tree(&mut self) {
+        let prev_selected = self.tree_state.selected().and_then(|i| {
+            self.tree_nodes.get(i).map(|n| n.id)
+        });
+
+        self.tree_items.clear();
+        self.tree_nodes.clear();
+
+        let root_children = match self.svc.get_children(None).await {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut stack: Vec<(kms::Index, usize)> = root_children.into_iter().map(|c| (c, 0)).collect();
+
+        while let Some((node, depth)) = stack.pop() {
+            let title = node.title.as_deref().unwrap_or("(unnamed)");
+            let indent = "  ".repeat(depth);
+            let icon = match node.target_type {
+                kms::TargetType::Group => "▸ ",
+                kms::TargetType::Knowledge => "● ",
+            };
+            self.tree_items.push(ListItem::new(format!("{}{}{}", indent, icon, title)));
+            self.tree_nodes.push(node.clone());
+
+            if let Ok(children) = self.svc.get_children(Some(node.id)).await {
+                for child in children.into_iter().rev() {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+
+        if let Some(prev_id) = prev_selected {
+            if let Some(new_idx) = self.tree_nodes.iter().position(|n| n.id == prev_id) {
+                self.tree_state.select(Some(new_idx));
+            } else {
+                self.tree_state.select(Some(0));
+            }
+        } else {
+            self.tree_state.select(Some(0));
+        }
+
+        if let Ok(diagnostics) = self.svc.diagnose().await {
+            if diagnostics.is_empty() {
+                self.diagnostic_lines = vec![Line::from(ratatui::text::Span::styled(
+                    "No issues found.".to_owned(),
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Green),
+                ))];
+            } else {
+                let mut lines = vec![Line::from(format!("{} issues found:", diagnostics.len()))];
+                for d in &diagnostics {
+                    lines.push(crate::styles::style_diagnostic_line(&format!(
+                        "[{}] {} — {}",
+                        d.severity.label(),
+                        d.code,
+                        d.message
+                    )));
+                    if !d.location.is_empty() {
+                        lines.push(crate::styles::style_diagnostic_line(&d.location));
+                    }
+                    for action in &d.suggested_actions {
+                        lines.push(crate::styles::style_diagnostic_line(&format!("  → {}", action)));
+                    }
+                    lines.push(Line::from(""));
+                }
+                self.diagnostic_lines = lines;
+            }
+        }
+
+        self.on_tree_select().await;
     }
 }
