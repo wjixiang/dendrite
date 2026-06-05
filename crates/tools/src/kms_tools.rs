@@ -36,6 +36,7 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegis
         list_entities(svc.clone()),
         get_entity(svc.clone()),
         search_entity(svc.clone()),
+        delete_entity(svc.clone()),
         get_entity_knowledge(svc.clone()),
         create_knowledge(svc.clone()),
         get_knowledge(svc.clone()),
@@ -92,13 +93,14 @@ fn create_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
                     });
                 }
 
-                let entity = svc.create_entity(nomenclatures, definition).await?;
+                let (entity, existed) = svc.create_entity(nomenclatures, definition).await?;
 
                 Ok(ToolResult::success_json(
                     "create_entity",
                     serde_json::json!({
                         "name": entity.name.first().map(|n| n.full.as_str()).unwrap_or(""),
-                        "definition": entity.definition
+                        "definition": entity.definition,
+                        "existed": existed
                     }),
                 ))
             })
@@ -233,6 +235,33 @@ fn list_entities(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
                         "count": results.len(),
                         "entities": results,
                     }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn delete_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_delete_entity",
+        "Delete an entity and all its nomenclatures by UUID. Use kms_list_entities to find the ID of orphan or duplicate entities.",
+    )
+    .parameter("id", "string", "UUID of the entity to delete")
+    .required("id")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let id_str = input["id"].as_str().ok_or("missing 'id'")?;
+                let id = Uuid::parse_str(id_str).map_err(|_| "invalid 'id' UUID")?;
+                svc.delete_entity(id).await?;
+                Ok(ToolResult::success_json(
+                    "delete_entity",
+                    serde_json::json!({ "deleted": id_str }),
                 ))
             })
         })),

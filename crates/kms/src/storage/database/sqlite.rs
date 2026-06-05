@@ -100,10 +100,14 @@ impl SqliteEntityRepo {
 
 impl EntityRepo for SqliteEntityRepo {
     async fn create(&self, entity: &Entity) -> Result<Uuid, StorageError> {
+        // Wrap entity + nomenclatures in a transaction so a partial failure
+        // (e.g. UNIQUE constraint on nomenclature) rolls back the entity row too.
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query::<Sqlite>("INSERT INTO entities (id, definition) VALUES (?, ?)")
             .bind(entity.id.to_string())
             .bind(&entity.definition)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
         for nom in &entity.name {
@@ -115,10 +119,11 @@ impl EntityRepo for SqliteEntityRepo {
             .bind(language_to_str(&nom.lang))
             .bind(&nom.full)
             .bind(&nom.abbr)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
 
+        tx.commit().await?;
         Ok(entity.id)
     }
 
@@ -286,16 +291,40 @@ impl EntityRepo for SqliteEntityRepo {
     }
 
     async fn update(&self, entity: &Entity) -> Result<(), StorageError> {
+        let id_str = entity.id.to_string();
+
+        let mut tx = self.pool.begin().await?;
+
         let result = sqlx::query::<Sqlite>("UPDATE entities SET definition = ? WHERE id = ?")
             .bind(&entity.definition)
-            .bind(entity.id.to_string())
-            .execute(&self.pool)
+            .bind(&id_str)
+            .execute(&mut *tx)
             .await?;
 
         if result.rows_affected() == 0 {
             return Err(StorageError::NotFound(entity.id));
         }
 
+        // Replace all nomenclatures: delete old, insert new.
+        sqlx::query::<Sqlite>("DELETE FROM nomenclatures WHERE entity_id = ?")
+            .bind(&id_str)
+            .execute(&mut *tx)
+            .await?;
+
+        for nom in &entity.name {
+            sqlx::query::<Sqlite>(
+                "INSERT INTO nomenclatures (id, entity_id, lang, full, abbr) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(nom.id.to_string())
+            .bind(&id_str)
+            .bind(language_to_str(&nom.lang))
+            .bind(&nom.full)
+            .bind(&nom.abbr)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 

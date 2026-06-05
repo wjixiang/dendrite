@@ -26,7 +26,8 @@ impl EntityDiagnosticRule for NoNomenclature {
                 severity: Severity::Error,
                 message: "实体没有任何命名".to_string(),
                 suggested_actions: vec![
-                    "实体必须至少有一个命名 (nomenclature)".to_string(),
+                    "使用 kms_delete_entity 删除该孤儿实体 (推荐)".to_string(),
+                    "或使用 kms_update_entity 为其添加命名".to_string(),
                 ],
             })
         } else {

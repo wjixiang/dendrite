@@ -72,6 +72,7 @@ pub struct App {
     pub providers: Vec<SettingsProvider>,
     pub current_provider: String,
     pub current_model: String,
+    pub top_col_widths: [u16; 3],
 }
 
 impl Default for App {
@@ -130,6 +131,7 @@ impl App {
             providers,
             current_provider,
             current_model,
+            top_col_widths: [30, 40, 30],
         }
     }
 

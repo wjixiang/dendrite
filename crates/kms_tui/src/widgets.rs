@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::layout::{BOTTOM_H_CONSTRAINTS, LAYOUT_CONSTRAINTS, TOP_H_CONSTRAINTS};
+use crate::layout::{BOTTOM_H_CONSTRAINTS, LAYOUT_CONSTRAINTS, top_h_constraints};
 use crate::state::{App, KeTab, Panel, SettingsPane};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
@@ -156,7 +156,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let top_row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(TOP_H_CONSTRAINTS)
+        .constraints(top_h_constraints(&app.top_col_widths))
         .split(vertical[0]);
 
     let bottom_row = Layout::default()

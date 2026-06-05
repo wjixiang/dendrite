@@ -56,7 +56,27 @@ impl KmsService {
         &self,
         names: Vec<Nomenclature>,
         definition: &str,
-    ) -> Result<Entity, String> {
+    ) -> Result<(Entity, bool), String> {
+        // Deduplication: if an entity with the same name already exists, return it.
+        let lookup_name = names
+            .iter()
+            .find(|n| n.lang == Language::ZH)
+            .or_else(|| names.first())
+            .map(|n| n.full.as_str())
+            .unwrap_or("");
+
+        if !lookup_name.is_empty() {
+            if let Some(existing) = self
+                .storage
+                .entity
+                .find_by_exact_name(lookup_name)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                return Ok((existing, true)); // existed = true
+            }
+        }
+
         let entity = Entity {
             id: Uuid::new_v4(),
             name: names,
@@ -68,11 +88,15 @@ impl KmsService {
             .create(&entity)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(entity)
+        Ok((entity, false)) // existed = false
     }
 
     pub async fn get_entity(&self, id: Uuid) -> Result<Entity, String> {
         self.storage.entity.get(id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn delete_entity(&self, id: Uuid) -> Result<(), String> {
+        self.storage.entity.delete(id).await.map_err(|e| e.to_string())
     }
 
     pub async fn search_entity(&self, keyword: &str) -> Result<Vec<Entity>, String> {
@@ -951,10 +975,11 @@ mod tests {
     #[tokio::test]
     async fn test_entity_crud() {
         let svc = setup_service().await;
-        let e = svc
+        let (e, existed) = svc
             .create_entity(vec![make_name("测试实体")], "定义")
             .await
             .unwrap();
+        assert!(!existed);
         assert_eq!(e.definition, "定义");
         assert!(!e.name.is_empty());
         assert_eq!(e.name[0].full, "测试实体");
@@ -966,7 +991,7 @@ mod tests {
     #[tokio::test]
     async fn test_knowledge_crud() {
         let svc = setup_service().await;
-        let e = svc
+        let (e, _existed) = svc
             .create_entity(vec![make_name("实体")], "定义")
             .await
             .unwrap();
@@ -984,7 +1009,7 @@ mod tests {
     #[tokio::test]
     async fn test_index_tree() {
         let svc = setup_service().await;
-        let _e = svc
+        let (_e, _existed) = svc
             .create_entity(vec![make_name("实体")], "定义")
             .await
             .unwrap();

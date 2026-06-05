@@ -22,6 +22,11 @@ const PANEL_ORDER: [Panel; 4] = [
     Panel::Diagnostics,
 ];
 
+const TOP_PANEL_ORDER: [Panel; 3] = [Panel::Tree, Panel::KnowledgeEntity, Panel::Agent];
+
+const RESIZE_STEP: u16 = 2;
+const MIN_PANEL_PCT: u16 = 10;
+
 const MAX_VAL_LEN: usize = 60;
 
 fn truncate(s: &str, max: usize) -> String {
@@ -179,6 +184,32 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
     }
 }
 
+fn resize_panel(app: &mut App, direction: isize) {
+    let idx = match TOP_PANEL_ORDER.iter().position(|&p| p == app.focused) {
+        Some(i) => i,
+        None => return,
+    };
+    let neighbor = if direction > 0 {
+        idx.saturating_sub(1)
+    } else {
+        (idx + 1).min(TOP_PANEL_ORDER.len() - 1)
+    };
+    if neighbor == idx {
+        return;
+    }
+    let step = RESIZE_STEP as isize;
+    let cur = app.top_col_widths[idx] as isize;
+    let nbr = app.top_col_widths[neighbor] as isize;
+    let min = MIN_PANEL_PCT as isize;
+    let new_cur = (cur + direction * step).clamp(min, cur + nbr - min);
+    let diff = new_cur - cur;
+    if diff == 0 {
+        return;
+    }
+    app.top_col_widths[idx] = new_cur as u16;
+    app.top_col_widths[neighbor] = (nbr - diff) as u16;
+}
+
 pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
     // --- Agent input mode ---
     if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
@@ -277,6 +308,16 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
                 crate::state::KeTab::Entity => crate::state::KeTab::Knowledge,
             };
             app.ke_scroll = 0;
+            Action::None
+        }
+        KeyEvent { code: KeyCode::Char('j'), modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. }
+        | KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. } => {
+            resize_panel(app, -1);
+            Action::None
+        }
+        KeyEvent { code: KeyCode::Char('k'), modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. }
+        | KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. } => {
+            resize_panel(app, 1);
             Action::None
         }
         KeyEvent { code: KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown, .. } => {
