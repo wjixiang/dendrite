@@ -27,8 +27,7 @@ CREATE TABLE IF NOT EXISTS indexes (
   target TEXT,
   target_type TEXT NOT NULL DEFAULT 'group',
   parent_id TEXT,
-  position INTEGER NOT NULL,
-  UNIQUE(title)
+  position INTEGER NOT NULL
 );
 
 CREATE TRIGGER IF NOT EXISTS indexes_cascade_delete

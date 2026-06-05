@@ -4,7 +4,7 @@ use std::sync::Arc;
 use agent::agent_builder::AgentBuilder;
 use agent::model::model_pool::ModelPool;
 use agent::provider::LlmProvider;
-use agent::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
+use agent::provider::mimo::{MODEL_MIMO_V2_5, MODEL_MIMO_V2_5_PRO, MimoProvider};
 use regex::Regex;
 use types::messages::ContentBlock;
 
@@ -239,7 +239,7 @@ async fn import_textbook() {
 
     // 初始化 Agent
     let mimo_provider = MimoProvider::new(None, None, None);
-    let mimo_model = mimo_provider.get_model(MODEL_MIMO_V2_5).unwrap();
+    let mimo_model = mimo_provider.get_model(MODEL_MIMO_V2_5_PRO).unwrap();
 
     let mut pool = ModelPool::new();
     pool.add_model(mimo_model);

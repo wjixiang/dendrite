@@ -98,7 +98,7 @@ impl Memory {
 
         self.create_mem_item();
 
-        dbg!("compact finished");
+        tracing::debug!("compact finished");
         Ok(())
     }
 }

@@ -32,7 +32,11 @@ use crate::{
 };
 
 /// KMS tools that only read state and never mutate the knowledge tree.
-const READONLY_KMS_TOOLS: &[&str] = &["kms_search_entity", "kms_navigate", "kms_get_entity_knowledge"];
+const READONLY_KMS_TOOLS: &[&str] = &[
+    "kms_search_entity",
+    "kms_navigate",
+    "kms_get_entity_knowledge",
+];
 
 fn format_diagnostics(issues: &[Diagnostic]) -> String {
     let mut lines = vec![format!("诊断发现 {} 个问题：", issues.len())];
@@ -270,7 +274,7 @@ impl Agent {
         }
 
         let tool_results = self.toolset.execute(&toolcalls).await?;
-        // dbg!(&tool_results);
+        tracing::debug!(?tool_results, "tool execution results");
 
         for tr in &tool_results {
             let result_text: String = tr
@@ -375,7 +379,9 @@ impl Agent {
         let _enter = span.enter();
 
         let model = if let Some(name) = &self.current_model_name {
-            self.model_pool.get_model_by_name(name).unwrap_or_else(|_| self.model_pool.get_model_roundrobin().unwrap())
+            self.model_pool
+                .get_model_by_name(name)
+                .unwrap_or_else(|_| self.model_pool.get_model_roundrobin().unwrap())
         } else {
             self.model_pool.get_model_roundrobin().unwrap()
         };
@@ -383,7 +389,7 @@ impl Agent {
         let est_totol_token = self.token_budget.estimate_total_token(context.len() as u64);
 
         if est_totol_token * 9 > (model.model_info.context_length * 10) {
-            dbg!(est_totol_token, model.model_info.context_length);
+            tracing::debug!(est_tokens = est_totol_token, context_length = model.model_info.context_length, "context pressure detected, compacting");
             self.memory.compact(model.as_ref()).await?;
         }
 
@@ -391,7 +397,7 @@ impl Agent {
             .request(context, self.toolset.tools().as_ref())
             .await?;
 
-        // dbg!(&response);
+        tracing::debug!(?response, "LLM response");
 
         Ok(response)
     }
@@ -584,7 +590,7 @@ mod tests {
 
         agent.start().await.unwrap();
         let snapshot = agent.snapshot().await;
-        dbg!(&snapshot);
+        tracing::debug!(?snapshot, "agent snapshot");
         // Verify the agent completed (IDLE) and produced conversation messages
         assert_eq!(snapshot.agent_status, AgentLifecycleStatus::IDLE);
         assert!(snapshot.memory.items.last().unwrap().messages.len() >= 3);
@@ -615,6 +621,6 @@ mod tests {
             .unwrap();
 
         let msg = agent.build_context().await.unwrap();
-        dbg!(msg);
+        tracing::debug!(?msg, "build_context output");
     }
 }

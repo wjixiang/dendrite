@@ -32,6 +32,8 @@ fn flatten_nested_headings(content: &str) -> String {
 pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegistration> {
     vec![
         create_entity(svc.clone()),
+        update_entity(svc.clone()),
+        list_entities(svc.clone()),
         get_entity(svc.clone()),
         search_entity(svc.clone()),
         get_entity_knowledge(svc.clone()),
@@ -66,7 +68,13 @@ fn create_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
             let svc = svc.clone();
             Box::pin(async move {
                 let definition = input["definition"].as_str().ok_or("missing 'definition'")?;
+                if definition.is_empty() {
+                    return Err("'definition' must not be empty".into());
+                }
                 let names_arr = input["names"].as_array().ok_or("missing 'names'")?;
+                if names_arr.is_empty() {
+                    return Err("'names' must not be empty".into());
+                }
 
                 let mut nomenclatures = Vec::with_capacity(names_arr.len());
                 for name_val in names_arr {
@@ -91,6 +99,139 @@ fn create_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
                     serde_json::json!({
                         "name": entity.name.first().map(|n| n.full.as_str()).unwrap_or(""),
                         "definition": entity.definition
+                    }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn update_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_update_entity",
+        "Update an entity's definition and/or nomenclatures. Use name_ref or id to locate the entity.",
+    )
+    .parameter("name_ref", "string", "Current nomenclature full name of the entity to update (use id if entity has no nomenclature)")
+    .parameter("id", "string", "UUID of the entity to update (use when entity has no nomenclature)")
+    .parameter("definition", "string", "New definition for the entity")
+    .parameter("names", "array", "New nomenclature array: [{lang: 'ZH'|'EN', full: string, abbr?: string}]")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let name_ref = input["name_ref"].as_str();
+                let id_str = input["id"].as_str();
+
+                let entity = if let Some(id_str) = id_str {
+                    let id = Uuid::parse_str(id_str).map_err(|_| "invalid 'id' UUID")?;
+                    let definition = input["definition"].as_str();
+                    let names = parse_names(&input["names"])?;
+                    svc.update_entity_by_id(id, definition, names).await?
+                } else {
+                    let name_ref = name_ref.ok_or("missing 'name_ref' or 'id'")?;
+                    let definition = input["definition"].as_str();
+                    let names = parse_names(&input["names"])?;
+                    svc.update_entity_by_ref(name_ref, definition, names).await?
+                };
+
+                let names_json: Vec<Value> = entity
+                    .name
+                    .iter()
+                    .map(|n| {
+                        serde_json::json!({
+                            "lang": format!("{:?}", n.lang),
+                            "full": n.full,
+                            "abbr": n.abbr
+                        })
+                    })
+                    .collect();
+
+                Ok(ToolResult::success_json(
+                    "update_entity",
+                    serde_json::json!({
+                        "id": entity.id.to_string(),
+                        "name": entity.name.first().map(|n| n.full.as_str()).unwrap_or(""),
+                        "definition": entity.definition,
+                        "names": names_json,
+                    }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn parse_names(val: &Value) -> Result<Option<Vec<kms::Nomenclature>>, Box<dyn std::error::Error + Send + Sync>> {
+    if !val.is_array() {
+        return Ok(None);
+    }
+    let names_arr = val.as_array().unwrap();
+    let mut nomenclatures = Vec::with_capacity(names_arr.len());
+    for name_val in names_arr {
+        let lang = name_val["lang"].as_str().unwrap_or("ZH");
+        let full = name_val["full"].as_str().ok_or("missing 'full' in nomenclature")?;
+        let abbr = name_val["abbr"].as_str().map(|s| s.to_string());
+        nomenclatures.push(kms::Nomenclature {
+            id: Uuid::new_v4(),
+            lang: match lang {
+                "EN" => kms::Language::EN,
+                _ => kms::Language::ZH,
+            },
+            full: full.to_string(),
+            abbr,
+        });
+    }
+    Ok(Some(nomenclatures))
+}
+
+fn list_entities(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_list_entities",
+        "List entities, optionally filtered by condition. Used to find entities with empty definitions or no nomenclatures.",
+    )
+    .parameter("filter", "string", "Filter condition: 'empty_definition', 'no_nomenclature', or 'all' (default: 'all')")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let filter = match input["filter"].as_str() {
+                    Some("empty_definition") => kms::EntityFilter::EmptyDefinition,
+                    Some("no_nomenclature") => kms::EntityFilter::NoNomenclature,
+                    _ => kms::EntityFilter::All,
+                };
+
+                let entities = svc.list_entities(filter).await?;
+
+                let results: Vec<Value> = entities
+                    .into_iter()
+                    .map(|e| {
+                        let names: Vec<Value> = e.name.iter().map(|n| {
+                            serde_json::json!({
+                                "lang": format!("{:?}", n.lang),
+                                "full": n.full,
+                                "abbr": n.abbr
+                            })
+                        }).collect();
+                        serde_json::json!({
+                            "id": e.id.to_string(),
+                            "names": names,
+                            "definition": e.definition,
+                        })
+                    })
+                    .collect();
+
+                Ok(ToolResult::success_json(
+                    "list_entities",
+                    serde_json::json!({
+                        "count": results.len(),
+                        "entities": results,
                     }),
                 ))
             })

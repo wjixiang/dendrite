@@ -10,6 +10,13 @@ use crate::diagnostics;
 
 use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EntityFilter {
+    EmptyDefinition,
+    NoNomenclature,
+    All,
+}
+
 struct Inner {
     pointer: RwLock<Uuid>,
 }
@@ -76,6 +83,19 @@ impl KmsService {
             .map_err(|e| e.to_string())
     }
 
+    pub async fn list_entities(&self, filter: EntityFilter) -> Result<Vec<Entity>, String> {
+        let all = self.storage.entity.list_all().await.map_err(|e| e.to_string())?;
+        match filter {
+            EntityFilter::All => Ok(all),
+            EntityFilter::EmptyDefinition => {
+                Ok(all.into_iter().filter(|e| e.definition.is_empty()).collect())
+            }
+            EntityFilter::NoNomenclature => {
+                Ok(all.into_iter().filter(|e| e.name.is_empty()).collect())
+            }
+        }
+    }
+
     pub async fn resolve(&self, name: &str) -> Result<Uuid, String> {
         if let Some(entity) = self
             .storage
@@ -133,6 +153,44 @@ impl KmsService {
             return Ok(knowledge.id);
         }
         Err(format!("knowledge not found: {}", title))
+    }
+
+    pub async fn update_entity_by_ref(
+        &self,
+        name_ref: &str,
+        new_definition: Option<&str>,
+        new_names: Option<Vec<Nomenclature>>,
+    ) -> Result<Entity, String> {
+        let id = self.resolve(name_ref).await?;
+        self.update_entity(id, new_definition, new_names).await
+    }
+
+    pub async fn update_entity_by_id(
+        &self,
+        id: Uuid,
+        new_definition: Option<&str>,
+        new_names: Option<Vec<Nomenclature>>,
+    ) -> Result<Entity, String> {
+        self.update_entity(id, new_definition, new_names).await
+    }
+
+    async fn update_entity(
+        &self,
+        id: Uuid,
+        new_definition: Option<&str>,
+        new_names: Option<Vec<Nomenclature>>,
+    ) -> Result<Entity, String> {
+        let mut entity = self.storage.entity.get(id).await.map_err(|e| e.to_string())?;
+
+        if let Some(definition) = new_definition {
+            entity.definition = definition.to_string();
+        }
+        if let Some(names) = new_names {
+            entity.name = names;
+        }
+
+        self.storage.entity.update(&entity).await.map_err(|e| e.to_string())?;
+        Ok(entity)
     }
 
     pub async fn create_knowledge(
@@ -450,26 +508,10 @@ impl KmsService {
     ) -> Result<Knowledge, String> {
         let mut entities = Vec::with_capacity(entity_refs.len());
         for r in entity_refs {
-            match self.resolve(r).await {
-                Ok(id) => entities.push(id),
-                Err(_) => {
-                    // Entity not found — auto-create it with an empty definition
-                    let nomenclature = Nomenclature {
-                        id: Uuid::new_v4(),
-                        lang: Language::ZH,
-                        full: r.to_string(),
-                        abbr: None,
-                    };
-                    let entity = self
-                        .create_entity(vec![nomenclature], "")
-                        .await?;
-                    eprintln!(
-                        "[kms] auto-created entity '{}' ({}) for knowledge '{}'",
-                        r, entity.id, title
-                    );
-                    entities.push(entity.id);
-                }
-            }
+            let id = self.resolve(r).await.map_err(|_| {
+                format!("entity '{}' not found, please create it first with kms_create_entity", r)
+            })?;
+            entities.push(id);
         }
         self.create_knowledge(title, knowledge_type, entities, content)
             .await
