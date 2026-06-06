@@ -2,10 +2,13 @@
 name = "agent-kms"
 version = "0.1.0"
 edition = "2024"
+description = "KMS adapter for the agentik-core runtime."
 
 [dependencies]
-agentik-core = { path = "../agentik-core" }
+# agentik-core lives in a separate repository. Locally we point to it via path;
+# in production, this would be a git dep: agentik-core = { git = "...", tag = "vX.Y.Z" }
+agentik-core = { path = "../../../agentik-core/crates/agentik-core" }
+tools = { path = "../../../agentik-core/crates/tools", features = ["kms"] }
 kms = { path = "../kms" }
-tools = { path = "../tools", features = ["kms"] }
 async-trait = { workspace = true }
 uuid = { version = "1.12", features = ["v4"] }

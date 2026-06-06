@@ -1,10 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/types",
-  "crates/llm_api",
-  "crates/tools",
-  "crates/agentik-core",
   "crates/agent-kms",
   "crates/kms",
   "crates/kms_tui",

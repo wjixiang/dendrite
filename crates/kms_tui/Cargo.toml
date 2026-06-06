@@ -8,13 +8,15 @@ name = "kms-tui"
 path = "src/main.rs"
 
 [dependencies]
-agentik-core = { path = "../agentik-core" }
+# agentik-core lives in a separate repository. Locally we point to it via path;
+# in production, this would be a git dep: agentik-core = { git = "...", tag = "vX.Y.Z" }
+agentik-core = { path = "../../../agentik-core/crates/agentik-core" }
 agent-kms = { path = "../agent-kms" }
-llm_api = { path = "../llm_api" }
-types = { path = "../types" }
+llm_api = { path = "../../../agentik-core/crates/llm_api" }
+types = { path = "../../../agentik-core/crates/types", features = ["http"] }
+kms = { path = "../kms" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-kms = { path = "../kms" }
 ratatui = "0.29"
 crossterm = "0.28"
 dotenvy = "0.15.7"
