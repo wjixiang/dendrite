@@ -5,7 +5,7 @@ edition = "2024"
 description = "KMS adapter for the agentik-core runtime."
 
 [dependencies]
-agentik-core = { git = "https://github.com/wjixiang/agentik-core.git" }
+agentik-core = { workspace = true }
 
 # Domain-specific tools (KMS). These are external to agentik-core.
 dendrite-tools = { path = "../dendrite-tools" }

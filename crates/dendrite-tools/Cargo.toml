@@ -9,11 +9,9 @@ description = "External (domain-specific) tools for the agentik-core runtime. Bu
 kms = { path = "../kms" }
 
 # agentik-core's tools framework: ToolRegistration, SimpleTool, ToolFunction, Toolset, etc.
-# MUST use the exact same git URL as `agentik-core` in crates/agent-kms/Cargo.toml,
-# otherwise Cargo sees two distinct crate instances and `ToolRegistration` becomes
-# a different type in each, breaking the `AgentContext` trait impl in agent-kms.
-tools = { git = "https://github.com/wjixiang/agentik-core.git" }
-types = { git = "https://github.com/wjixiang/agentik-core.git" }
+# Sourced from the workspace to guarantee a single crate instance (see [workspace.dependencies]).
+tools = { workspace = true }
+types = { workspace = true }
 
 futures = "0.3"
 serde_json = "1"
