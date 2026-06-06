@@ -5,9 +5,7 @@ edition = "2024"
 description = "KMS adapter for the agentik-core runtime."
 
 [dependencies]
-# agentik-core lives in a separate repository. Locally we point to it via path;
-# in production, this would be a git dep: agentik-core = { git = "...", tag = "vX.Y.Z" }
-agentik-core = { path = "../../../agentik-core/crates/agentik-core" }
+agentik-core = { git = "https://github.com/wjixiang/agentik-core.git" }
 
 # Domain-specific tools (KMS). These are external to agentik-core.
 dendrite-tools = { path = "../dendrite-tools" }
