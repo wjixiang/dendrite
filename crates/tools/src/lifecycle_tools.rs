@@ -4,6 +4,7 @@ use serde_json::Value;
 use types::ToolEffect;
 use types::tools::{ToolBuilder, ToolResult, ToolResultContent};
 
+use crate::toolset::ToolRegistration;
 use crate::ToolFunction;
 
 #[derive(Debug, Deserialize)]
@@ -70,4 +71,11 @@ impl ToolFunction for AbortTaskTool {
             is_error: None,
         })
     }
+}
+
+pub fn lifecycle_registrations() -> Vec<ToolRegistration> {
+    vec![
+        ToolRegistration::from(AttemptCompleteTool),
+        ToolRegistration::from(AbortTaskTool),
+    ]
 }

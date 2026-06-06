@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use agent::agent::Agent;
-use agent::model::model_pool::ModelPool;
-use agent::provider::LlmProvider;
-use agent::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
-use agent::provider::minimax::{MODEL_MINIMAX_M2_7, MinimaxProvider};
+use agentik_core::agent::Agent;
+use agent_kms::KmsContext;
+use agentik_core::model::model_pool::ModelPool;
+use agentik_core::provider::LlmProvider;
+use agentik_core::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
+use agentik_core::provider::minimax::{MODEL_MINIMAX_M2_7, MinimaxProvider};
 use types::messages::ContentBlock;
 
 /// Integration test that exercises a full agent workflow against a real LLM API.
@@ -32,9 +33,10 @@ async fn basic_agent() {
     // pool.add_model(model);
     pool.add_model(mimo_model);
 
+    let ctx = Arc::new(KmsContext::from_path("data/kms_sqlite.db").await.unwrap());
     let mut agent = Agent::builder()
         .with_model_pool(Arc::new(pool))
-        .with_kms_path("data/kms_sqlite.db")
+        .with_context(ctx)
         .build()
         .await
         .unwrap();

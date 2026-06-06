@@ -1,15 +1,11 @@
+#[cfg(feature = "kms")]
 use std::sync::Arc;
+#[cfg(feature = "kms")]
 use crate::kms_tools;
-use crate::lifecycle_tools::{AbortTaskTool, AttemptCompleteTool};
+#[cfg(feature = "kms")]
 use crate::toolset::ToolRegistration;
 
-pub fn lifecycle_registrations() -> Vec<ToolRegistration> {
-    vec![
-        ToolRegistration::from(AttemptCompleteTool),
-        ToolRegistration::from(AbortTaskTool),
-    ]
-}
-
+#[cfg(feature = "kms")]
 pub fn kms_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
     kms_tools::registrations(svc)
 }

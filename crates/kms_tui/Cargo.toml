@@ -8,7 +8,8 @@ name = "kms-tui"
 path = "src/main.rs"
 
 [dependencies]
-agent = { path = "../agent" }
+agentik-core = { path = "../agentik-core" }
+agent-kms = { path = "../agent-kms" }
 llm_api = { path = "../llm_api" }
 types = { path = "../types" }
 serde = { version = "1", features = ["derive"] }

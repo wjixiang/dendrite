@@ -58,7 +58,7 @@ pub struct App {
     pub svc: kms::KmsService,
     pub ke_tab: KeTab,
     pub ke_scroll: u16,
-    pub agent: Arc<tokio::sync::Mutex<agent::Agent>>,
+    pub agent: Arc<tokio::sync::Mutex<agentik_core::Agent>>,
     pub agent_event_rx: Option<mpsc::UnboundedReceiver<types::AgentUiEvent>>,
     pub agent_running: bool,
     pub agent_following: bool,
@@ -84,7 +84,7 @@ impl Default for App {
 impl App {
     pub fn new(
         svc: kms::KmsService,
-        agent: Arc<tokio::sync::Mutex<agent::Agent>>,
+        agent: Arc<tokio::sync::Mutex<agentik_core::Agent>>,
         providers: Vec<SettingsProvider>,
         current_provider: String,
         current_model: String,

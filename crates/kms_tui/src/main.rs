@@ -15,6 +15,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     event::{DisableBracketedPaste, EnableBracketedPaste},
 };
+use agent_kms::KmsContext;
 use kms::KmsService;
 use llm_api::model::model_pool::ModelPool;
 use llm_api::provider::LlmProvider;
@@ -153,9 +154,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = build_pool(&current_provider, &current_model)
         .expect("Failed to build model pool for selected provider/model");
 
-    let agent = agent::Agent::builder()
+    let agent = agentik_core::Agent::builder()
         .with_model_pool(Arc::new(pool))
-        .with_kms(Arc::new(svc.clone()))
+        .with_context(Arc::new(KmsContext::new(Arc::new(svc.clone()))))
         .build()
         .await
         .map_err(|e| e.to_string())?;

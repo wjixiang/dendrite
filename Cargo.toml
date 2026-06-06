@@ -4,7 +4,8 @@ members = [
   "crates/types",
   "crates/llm_api",
   "crates/tools",
-  "crates/agent",
+  "crates/agentik-core",
+  "crates/agent-kms",
   "crates/kms",
   "crates/kms_tui",
 ]

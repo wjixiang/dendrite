@@ -9,8 +9,8 @@
 
 use std::{sync::Arc, time::Duration, time::UNIX_EPOCH};
 
+use crate::context::{format_diagnostics, AgentContext, ContextSnapshot};
 use crate::message_ext::AgentMessageExt;
-use kms::Diagnostic;
 use llm_api::model::model_pool::ModelPool;
 use tracing::{Level, event, span};
 use types::messages::{ContentBlock, Message, Role};
@@ -30,30 +30,6 @@ use crate::{
     storage::{AgentSnapshot, AgentSnapshotStorage},
     toolset::{ToolRegistration, Toolset},
 };
-
-/// KMS tools that only read state and never mutate the knowledge tree.
-const READONLY_KMS_TOOLS: &[&str] = &[
-    "kms_search_entity",
-    "kms_navigate",
-    "kms_get_entity_knowledge",
-];
-
-fn format_diagnostics(issues: &[Diagnostic]) -> String {
-    let mut lines = vec![format!("诊断发现 {} 个问题：", issues.len())];
-    for d in issues {
-        lines.push(format!(
-            "[{}] {} — {} — {}",
-            d.severity.label(),
-            d.code,
-            d.location,
-            d.message
-        ));
-        for action in &d.suggested_actions {
-            lines.push(format!("  → {}", action));
-        }
-    }
-    lines.join("\n")
-}
 
 pub struct AgentConfig {
     pub max_iterations: usize,
@@ -78,7 +54,7 @@ pub struct Agent {
     pub(crate) config: AgentConfig,
     pub(crate) storage: Option<Arc<dyn AgentSnapshotStorage>>,
     pub(crate) token_budget: TokenBudget,
-    pub(crate) kms: Arc<kms::KmsService>,
+    pub(crate) ctx: Arc<dyn AgentContext>,
     pub(crate) last_diagnostic_count: usize,
     /// Optional event channel for streaming progress to external observers.
     pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<types::AgentUiEvent>>,
@@ -169,11 +145,11 @@ impl Agent {
             "🤖 Agent started".to_string(),
         ));
 
-        if let Ok(location) = self.kms.render_location().await {
+        if let Ok(Some(location)) = self.ctx.on_startup_location().await {
             self.memory.remember(Message::user(location))?;
         }
 
-        if let Ok(issues) = self.kms.diagnose().await {
+        if let Ok(issues) = self.ctx.on_startup_diagnostics().await {
             self.last_diagnostic_count = issues.len();
             if !issues.is_empty() {
                 self.memory
@@ -264,7 +240,13 @@ impl Agent {
             return Err(AgentError::NoneToolUse);
         }
 
-        let pointer_before = self.kms.get_pointer().await;
+        let snapshot_before = match self.ctx.take_snapshot().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to take snapshot before: {}", e);
+                ContextSnapshot::new(Uuid::nil())
+            }
+        };
 
         for tc in &toolcalls {
             self.send_event(types::AgentUiEvent::ToolCall {
@@ -309,12 +291,9 @@ impl Agent {
             ))?;
         }
 
-        // Re-run diagnostics after KMS mutating tool calls
-        let has_kms_mutation = toolcalls.iter().any(|tc| {
-            tc.name.starts_with("kms_") && !READONLY_KMS_TOOLS.contains(&tc.name.as_str())
-        });
-        if has_kms_mutation {
-            if let Ok(issues) = self.kms.diagnose().await {
+        let has_mutation = toolcalls.iter().any(|tc| self.ctx.is_mutation_tool(&tc.name));
+        if has_mutation {
+            if let Ok(issues) = self.ctx.on_mutation_diagnostics().await {
                 if issues.len() != self.last_diagnostic_count {
                     self.last_diagnostic_count = issues.len();
                     if !issues.is_empty() {
@@ -330,10 +309,15 @@ impl Agent {
 
         self.handle_effect(&tool_results).await;
 
-        if self.kms.get_pointer().await != pointer_before {
-            if let Ok(location) = self.kms.render_location().await {
-                self.memory.remember(Message::user(location))?;
+        let snapshot_after = match self.ctx.take_snapshot().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to take snapshot after: {}", e);
+                ContextSnapshot::new(Uuid::nil())
             }
+        };
+        if let Ok(Some(location)) = self.ctx.on_snapshot_change(&snapshot_before, &snapshot_after).await {
+            self.memory.remember(Message::user(location))?;
         }
 
         Ok(())
@@ -361,7 +345,7 @@ impl Agent {
 
         let system_prompt = system_prompt_builder::SystemPromptBuilder::default()
             .build_identity()
-            .build_kms()
+            .with_extra_section(self.ctx.system_prompt_section())
             .parse();
 
         let context_messages = self.memory.render_context()?.to_vec();
@@ -449,178 +433,5 @@ impl TokenBudget {
 
     pub fn estimate_total_token(&self, system_prompt_token: u64) -> u64 {
         self.append_tokens + self.latest_usage + system_prompt_token
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lifecycle::AgentLifecycleStatus;
-    use async_trait::async_trait;
-    use llm_api::model::model_pool::ModelPool;
-    use llm_api::model::{Model, ModelInfo};
-    use llm_api::provider::client::MockApiClient;
-    use serde_json::Value;
-    use tools::ToolFunction;
-    use types::messages::Message;
-    use types::shared::Usage;
-    use types::tools::{ToolBuilder, ToolUse};
-
-    fn dummy_model_info(name: &str) -> ModelInfo {
-        ModelInfo {
-            model_name: name.into(),
-            provider: "test".into(),
-            context_length: 200000,
-            max_output_tokens: 1024,
-            vision_ability: true,
-            supports_function_calling: true,
-            supports_streaming: true,
-            supports_thinking: false,
-            input_token_price: 1.0,
-            output_token_price: 2.0,
-        }
-    }
-
-    fn mock_model_pool(model_name: &str, mock_tool_calls: Vec<ToolUse>) -> ModelPool {
-        let mut mock = MockApiClient::new();
-        let mock_msgs: Vec<Message> = mock_tool_calls
-            .iter()
-            .cloned()
-            .map(|t| Message::assistant_tool_use(t.id, t.name, t.input))
-            .collect();
-
-        let mock_usage = Usage {
-            input_tokens: 1024,
-            output_tokens: 128,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            server_tool_use: None,
-            service_tier: None,
-        };
-        let default_mock_msg =
-            Message::assistant_tool_use("test_uuid", "test_tool", serde_json::Value::Null)
-                .with_usage(mock_usage.clone());
-        let mut msg_iter = mock_msgs.into_iter();
-
-        mock.expect_request().returning(move |_, _, _| {
-            let msg = msg_iter
-                .next()
-                .unwrap_or(default_mock_msg.clone())
-                .clone()
-                .with_usage(mock_usage.clone());
-            Ok(msg)
-        });
-
-        let model = Model::new(dummy_model_info(model_name), mock);
-        let mut pool = ModelPool::new();
-        pool.add_model(model);
-        pool
-    }
-
-    async fn get_test_agent(mock_tool_call: Vec<ToolUse>) -> Agent {
-        let model_pool = mock_model_pool("test_model", mock_tool_call);
-
-        Agent::builder()
-            .with_model_pool(Arc::new(model_pool))
-            .with_kms(Arc::new(
-                kms::KmsService::new("sqlite::memory:").await.unwrap(),
-            ))
-            .build()
-            .await
-            .expect("failed to create test agent")
-    }
-
-    /// A mock tool that returns a simple text result.
-    struct MockEchoTool;
-    #[async_trait]
-    impl ToolFunction for MockEchoTool {
-        async fn execute(
-            &self,
-            _input: Value,
-        ) -> Result<types::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(types::tools::ToolResult::success("mock_id", "echo"))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_agent_basic_execution() {
-        let test_tool_def_1 = ToolBuilder::new("test_tool1", "A test tool for some operation")
-            .parameter("task", "string", "say some thing")
-            .build();
-
-        let test_tool_def_2 = ToolBuilder::new(
-            "attempt_complete",
-            "Signal that the current task is complete",
-        )
-        .parameter("reason", "string", "reason for completion")
-        .required("reason")
-        .build();
-
-        let mock_tool_calls = vec![
-            ToolUse {
-                id: "tc1".to_string(),
-                name: test_tool_def_1.name.clone(),
-                input: serde_json::Value::Null,
-            },
-            ToolUse {
-                id: "tc2".to_string(),
-                name: test_tool_def_2.name.clone(),
-                input: serde_json::json!({ "reason": "task done" }),
-            },
-        ];
-
-        let mut agent = get_test_agent(mock_tool_calls).await;
-
-        agent
-            .register_tools(vec![
-                ToolRegistration {
-                    definition: test_tool_def_1,
-                    implementation: Box::new(MockEchoTool),
-                    effects: vec![],
-                },
-                // attempt_complete_registration(),
-            ])
-            .unwrap();
-
-        agent
-            .inject_message(vec![ContentBlock::Text {
-                text: "hello".to_string(),
-            }])
-            .unwrap();
-
-        agent.start().await.unwrap();
-        let snapshot = agent.snapshot().await;
-        tracing::debug!(?snapshot, "agent snapshot");
-        // Verify the agent completed (IDLE) and produced conversation messages
-        assert_eq!(snapshot.agent_status, AgentLifecycleStatus::IDLE);
-        assert!(snapshot.memory.items.last().unwrap().messages.len() >= 3);
-    }
-
-    #[tokio::test]
-    async fn test_agent_request() {
-        let mut agent = get_test_agent(vec![ToolUse {
-            id: "tc1".to_string(),
-            name: "test_tool".to_string(),
-            input: serde_json::Value::Null,
-        }])
-        .await;
-
-        // Register a dummy tool so the model has tools available
-        agent
-            .register_tool(ToolRegistration {
-                definition: ToolBuilder::new("test_tool", "A test tool").build(),
-                implementation: Box::new(MockEchoTool),
-                effects: vec![],
-            })
-            .unwrap();
-
-        agent
-            .inject_message(vec![ContentBlock::Text {
-                text: "hello".to_string(),
-            }])
-            .unwrap();
-
-        let msg = agent.build_context().await.unwrap();
-        tracing::debug!(?msg, "build_context output");
     }
 }

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use agent_kms::KmsContext;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 use ratatui::style::{Color, Modifier, Style};
@@ -485,9 +486,9 @@ pub async fn run_app(
                                 if let (Some(new_provider), Some(new_model)) = (new_provider, new_model) {
                                     if new_provider != app.current_provider || new_model != app.current_model {
                                         if let Some(pool) = build_pool(&new_provider, &new_model) {
-                                            let new_agent = agent::Agent::builder()
+                                            let new_agent = agentik_core::Agent::builder()
                                                 .with_model_pool(Arc::new(pool))
-                                                .with_kms(Arc::new(app.svc.clone()))
+                                                .with_context(Arc::new(KmsContext::new(Arc::new(app.svc.clone()))))
                                                 .build()
                                                 .await
                                                 .map_err(|e| e.to_string())?;

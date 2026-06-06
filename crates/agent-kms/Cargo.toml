@@ -1,0 +1,11 @@
+[package]
+name = "agent-kms"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agentik-core = { path = "../agentik-core" }
+kms = { path = "../kms" }
+tools = { path = "../tools", features = ["kms"] }
+async-trait = { workspace = true }
+uuid = { version = "1.12", features = ["v4"] }

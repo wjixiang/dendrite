@@ -1,10 +1,11 @@
 use std::env;
 use std::sync::Arc;
 
-use agent::agent_builder::AgentBuilder;
-use agent::model::model_pool::ModelPool;
-use agent::provider::LlmProvider;
-use agent::provider::mimo::{MODEL_MIMO_V2_5, MODEL_MIMO_V2_5_PRO, MimoProvider};
+use agentik_core::agent_builder::AgentBuilder;
+use agent_kms::KmsContext;
+use agentik_core::model::model_pool::ModelPool;
+use agentik_core::provider::LlmProvider;
+use agentik_core::provider::mimo::{MODEL_MIMO_V2_5, MODEL_MIMO_V2_5_PRO, MimoProvider};
 use regex::Regex;
 use types::messages::ContentBlock;
 
@@ -250,9 +251,11 @@ async fn import_textbook() {
             .unwrap_or_else(|e| panic!("创建 KMS 失败: {e}")),
     );
 
+    let ctx = Arc::new(KmsContext::new(kms.clone()));
+
     let mut agent = AgentBuilder::new()
         .with_model_pool(Arc::new(pool))
-        .with_kms(kms.clone())
+        .with_context(ctx)
         .build()
         .await
         .unwrap();

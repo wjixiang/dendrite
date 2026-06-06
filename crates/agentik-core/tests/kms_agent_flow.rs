@@ -1,10 +1,11 @@
 use std::env;
 use std::sync::Arc;
 
-use agent::agent::Agent;
-use agent::model::model_pool::ModelPool;
-use agent::provider::LlmProvider;
-use agent::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
+use agentik_core::agent::Agent;
+use agent_kms::KmsContext;
+use agentik_core::model::model_pool::ModelPool;
+use agentik_core::provider::LlmProvider;
+use agentik_core::provider::mimo::{MODEL_MIMO_V2_5, MimoProvider};
 use types::messages::ContentBlock;
 
 /// Integration test: Agent uses KMS tools to organize medical textbook content.
@@ -20,9 +21,10 @@ async fn kms_agent_flow() {
     let mut pool = ModelPool::new();
     pool.add_model(mimo_model);
 
+    let ctx = Arc::new(KmsContext::from_path(&env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string())).await.unwrap());
     let mut agent = Agent::builder()
         .with_model_pool(Arc::new(pool))
-        .with_kms_path(env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string()))
+        .with_context(ctx)
         .build()
         .await
         .unwrap();
