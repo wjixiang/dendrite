@@ -1,0 +1,14 @@
+[package]
+name = "agent-knowledge"
+version = "0.1.0"
+edition = "2024"
+description = "Read-only knowledge retrieval agent context."
+
+[dependencies]
+agentik-core = { workspace = true }
+
+dendrite-tools = { path = "../dendrite-tools" }
+kms = { path = "../kms" }
+
+async-trait = { workspace = true }
+uuid = { version = "1.12", features = ["v4"] }

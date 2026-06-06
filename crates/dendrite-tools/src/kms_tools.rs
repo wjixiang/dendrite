@@ -55,3 +55,14 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
         kms_delete_index::registration(svc),
     ]
 }
+
+pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
+    vec![
+        kms_search_entity::registration(svc.clone()),
+        kms_navigate::registration(svc.clone()),
+        kms_get_entity::registration(svc.clone()),
+        kms_get_entity_knowledge::registration(svc.clone()),
+        kms_get_knowledge::registration(svc.clone()),
+        kms_list_entities::registration(svc),
+    ]
+}

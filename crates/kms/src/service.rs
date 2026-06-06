@@ -939,11 +939,11 @@ impl KmsService {
                 } else {
                     "  ├── "
                 };
-                let tt = match c.target_type {
+                let suffix = match c.target_type {
                     TargetType::Group => "",
-                    TargetType::Knowledge => " 📄",
+                    TargetType::Knowledge => " [knowledge]",
                 };
-                s.push_str(&format!("{}{}{}{}\n", connector, t, tt, ""));
+                s.push_str(&format!("{}{}{}{}\n", connector, t, suffix, ""));
             }
         }
         Ok(s)
@@ -967,11 +967,11 @@ impl KmsService {
             if is_root {
                 s.push_str(&format!("## {} (system root)\n", title));
             } else {
-                let tt = match node.target_type {
+                let suffix = match node.target_type {
                     TargetType::Group => "",
-                    TargetType::Knowledge => " 📄",
+                    TargetType::Knowledge => " [knowledge]",
                 };
-                s.push_str(&format!("{}{}{}{}\n", indent, connector, title, tt));
+                s.push_str(&format!("{}{}{}{}\n", indent, connector, title, suffix));
             }
 
             let children = match self.get_children(Some(node.id)).await {
