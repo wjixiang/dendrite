@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
 };
 use kms::KmsService;
 use llm_api::model::model_pool::ModelPool;
@@ -160,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| e.to_string())?;
 
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
@@ -240,8 +241,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = run_app(&mut terminal, &mut app).await;
 
+    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result

@@ -138,15 +138,17 @@ pub fn render_agent(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     } else if app.agent_input_active {
         Line::from(vec![Span::raw(format!("> {}", app.agent_input))])
     } else {
-        Line::from(vec![Span::styled("  (Enter to type)", Style::default().fg(Color::DarkGray))])
+        Line::from(vec![Span::styled(
+            "  (Enter to type)",
+            Style::default().fg(Color::DarkGray),
+        )])
     };
-    let input_line = Paragraph::new(input_label).style(Style::default().bg(
-        if app.agent_input_active {
+    let input_line =
+        Paragraph::new(input_label).style(Style::default().bg(if app.agent_input_active {
             Color::DarkGray
         } else {
             Color::Black
-        },
-    ));
+        }));
     f.render_widget(input_line, chunks[1]);
 
     if app.agent_input_active && app.focused == Panel::Agent {

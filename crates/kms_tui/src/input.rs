@@ -461,67 +461,84 @@ pub async fn run_app(
         terminal.draw(|f| ui(f, app))?;
 
         if crossterm::event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = crossterm::event::read()? {
-                match handle_key_event(key, app) {
-                    Action::Quit => app.should_quit = true,
-                    Action::TreeChanged => app.on_tree_select().await,
-                    Action::SubmitAgent(input) => spawn_agent_task(app, input),
-                    Action::OpenSettings => {
-                        app.settings_modal_open = true;
-                    }
-                    Action::SettingsNav(pane, delta) => {
-                        match pane {
-                            SettingsPane::Provider => {
-                                let max = app.providers.len().saturating_sub(1);
-                                app.settings_selected_provider = (app.settings_selected_provider as isize + delta)
-                                    .clamp(0, max as isize) as usize;
+            // Drain all pending events to avoid one-event-per-redraw bottleneck
+            // (e.g. terminals that send paste as individual Char events)
+            loop {
+                let event = crossterm::event::read()?;
+                match event {
+                    Event::Key(key) => {
+                        match handle_key_event(key, app) {
+                            Action::Quit => app.should_quit = true,
+                            Action::TreeChanged => app.on_tree_select().await,
+                            Action::SubmitAgent(input) => spawn_agent_task(app, input),
+                            Action::OpenSettings => {
+                                app.settings_modal_open = true;
                             }
-                            SettingsPane::Model => {
+                            Action::SettingsNav(pane, delta) => {
+                                match pane {
+                                    SettingsPane::Provider => {
+                                        let max = app.providers.len().saturating_sub(1);
+                                        app.settings_selected_provider = (app.settings_selected_provider as isize + delta)
+                                            .clamp(0, max as isize) as usize;
+                                    }
+                                    SettingsPane::Model => {
+                                        let provider_idx = app.settings_selected_provider;
+                                        if let Some(provider) = app.providers.get(provider_idx) {
+                                            let max = provider.models.len().saturating_sub(1);
+                                            app.settings_selected_model = (app.settings_selected_model as isize + delta)
+                                                .clamp(0, max as isize) as usize;
+                                        }
+                                    }
+                                }
+                            }
+                            Action::SettingsSwitchPane(pane) => {
+                                app.settings_pane = pane;
+                            }
+                            Action::SettingsConfirm => {
                                 let provider_idx = app.settings_selected_provider;
-                                if let Some(provider) = app.providers.get(provider_idx) {
-                                    let max = provider.models.len().saturating_sub(1);
-                                    app.settings_selected_model = (app.settings_selected_model as isize + delta)
-                                        .clamp(0, max as isize) as usize;
+                                let model_idx = app.settings_selected_model;
+
+                                let new_provider = app.providers.get(provider_idx).map(|p| p.name.clone());
+                                let new_model = app.providers.get(provider_idx)
+                                    .and_then(|p| p.models.get(model_idx).cloned());
+
+                                if let (Some(new_provider), Some(new_model)) = (new_provider, new_model) {
+                                    if new_provider != app.current_provider || new_model != app.current_model {
+                                        if let Some(pool) = build_pool(&new_provider, &new_model) {
+                                            let new_agent = agent::Agent::builder()
+                                                .with_model_pool(Arc::new(pool))
+                                                .with_kms(Arc::new(app.svc.clone()))
+                                                .build()
+                                                .await
+                                                .map_err(|e| e.to_string())?;
+
+                                            let old_agent = std::mem::replace(
+                                                &mut *app.agent.blocking_lock(),
+                                                new_agent,
+                                            );
+                                            drop(old_agent);
+
+                                            app.current_provider = new_provider.clone();
+                                            app.current_model = new_model.clone();
+                                            save_settings(&new_provider, &new_model);
+                                        }
+                                    }
                                 }
+                                app.settings_modal_open = false;
                             }
+                            Action::None => {}
                         }
                     }
-                    Action::SettingsSwitchPane(pane) => {
-                        app.settings_pane = pane;
-                    }
-                    Action::SettingsConfirm => {
-                        let provider_idx = app.settings_selected_provider;
-                        let model_idx = app.settings_selected_model;
-
-                        let new_provider = app.providers.get(provider_idx).map(|p| p.name.clone());
-                        let new_model = app.providers.get(provider_idx)
-                            .and_then(|p| p.models.get(model_idx).cloned());
-
-                        if let (Some(new_provider), Some(new_model)) = (new_provider, new_model) {
-                            if new_provider != app.current_provider || new_model != app.current_model {
-                                if let Some(pool) = build_pool(&new_provider, &new_model) {
-                                    let new_agent = agent::Agent::builder()
-                                        .with_model_pool(Arc::new(pool))
-                                        .with_kms(Arc::new(app.svc.clone()))
-                                        .build()
-                                        .await
-                                        .map_err(|e| e.to_string())?;
-
-                                    let old_agent = std::mem::replace(
-                                        &mut *app.agent.blocking_lock(),
-                                        new_agent,
-                                    );
-                                    drop(old_agent);
-
-                                    app.current_provider = new_provider.clone();
-                                    app.current_model = new_model.clone();
-                                    save_settings(&new_provider, &new_model);
-                                }
-                            }
+                    Event::Paste(s) => {
+                        if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
+                            app.agent_input.push_str(&s);
                         }
-                        app.settings_modal_open = false;
                     }
-                    Action::None => {}
+                    _ => {}
+                }
+                // Stop draining if no more events are queued
+                if !crossterm::event::poll(Duration::from_secs(0))? {
+                    break;
                 }
             }
         }
