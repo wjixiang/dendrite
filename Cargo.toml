@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/dendrite-tools",
   "crates/agent-kms",
   "crates/kms",
   "crates/kms_tui",

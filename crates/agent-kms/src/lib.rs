@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use agentik_core::context::{AgentContext, ContextDiagnostic, ContextSeverity, ContextSnapshot};
 use async_trait::async_trait;
-use tools::ToolRegistration;
+use dendrite_tools::ToolRegistration;
 use uuid::Uuid;
 
 const READONLY_KMS_TOOLS: &[&str] = &[
@@ -87,7 +87,7 @@ impl AgentContext for KmsContext {
     }
 
     fn tool_registrations(&self) -> Vec<ToolRegistration> {
-        tools::kms_tools::registrations(self.kms.clone())
+        dendrite_tools::kms_tools::registrations(self.kms.clone())
     }
 }
 

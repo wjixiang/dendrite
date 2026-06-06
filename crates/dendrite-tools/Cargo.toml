@@ -1,0 +1,18 @@
+[package]
+name = "dendrite-tools"
+version = "0.1.0"
+edition = "2024"
+description = "External (domain-specific) tools for the agentik-core runtime. Built around the KMS service."
+
+[dependencies]
+# KMS service (KMS-specific tool implementations)
+kms = { path = "../kms" }
+
+# agentik-core's tools framework: ToolRegistration, SimpleTool, ToolFunction, Toolset, etc.
+# In production this would be: tools = { git = "...", tag = "vX.Y.Z" }
+tools = { path = "../../../agentik-core/crates/tools" }
+types = { path = "../../../agentik-core/crates/types" }
+
+futures = "0.3"
+serde_json = "1"
+uuid = { version = "1.23", features = ["v4"] }
