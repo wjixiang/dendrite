@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to build model pool for selected provider/model");
     let pool_arc = Arc::new(pool);
 
-    let kms_agent = agentik_core::Agent::builder()
+    let compose_agent = agentik_core::Agent::builder()
         .with_model_pool(pool_arc.clone())
         .with_context(Arc::new(KmsContext::new(Arc::new(svc.clone()))))
         .build()
@@ -177,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>> =
         HashMap::new();
-    agents.insert(AgentKind::Kms, Arc::new(tokio::sync::Mutex::new(kms_agent)));
+    agents.insert(AgentKind::Compose, Arc::new(tokio::sync::Mutex::new(compose_agent)));
     agents.insert(
         AgentKind::Knowledge,
         Arc::new(tokio::sync::Mutex::new(knowledge_agent)),

@@ -436,7 +436,7 @@ pub async fn run_app(
                                 let svc_arc = Arc::new(app.svc.clone());
                                 let ctx: Arc<dyn agentik_core::context::AgentContext> =
                                     match app.agent_kind {
-                                        AgentKind::Kms => Arc::new(KmsContext::new(svc_arc)),
+                                        AgentKind::Compose => Arc::new(KmsContext::new(svc_arc)),
                                         AgentKind::Knowledge => {
                                             Arc::new(KnowledgeContext::new(svc_arc))
                                         }

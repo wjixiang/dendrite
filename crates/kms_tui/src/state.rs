@@ -12,22 +12,22 @@ use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentKind {
-    Kms,
+    Compose,
     Knowledge,
 }
 
 impl AgentKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Kms => "KMS",
+            Self::Compose => "Compose",
             Self::Knowledge => "Retrieval",
         }
     }
 
     pub fn toggle(self) -> Self {
         match self {
-            Self::Kms => Self::Knowledge,
-            Self::Knowledge => Self::Kms,
+            Self::Compose => Self::Knowledge,
+            Self::Knowledge => Self::Compose,
         }
     }
 }
@@ -159,17 +159,17 @@ impl App {
 
         let agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>> = {
             let mut m = HashMap::new();
-            m.insert(AgentKind::Kms, vec![ChatMessage::Divider]);
+            m.insert(AgentKind::Compose, vec![ChatMessage::Divider]);
             m.insert(AgentKind::Knowledge, vec![ChatMessage::Divider]);
             m
         };
 
         let agent_scroll_map = HashMap::from([
-            (AgentKind::Kms, 0),
+            (AgentKind::Compose, 0),
             (AgentKind::Knowledge, 0),
         ]);
         let agent_following_map = HashMap::from([
-            (AgentKind::Kms, true),
+            (AgentKind::Compose, true),
             (AgentKind::Knowledge, true),
         ]);
 
@@ -189,7 +189,7 @@ impl App {
             ke_tab: KeTab::Knowledge,
             ke_scroll: 0,
             agents,
-            agent_kind: AgentKind::Kms,
+            agent_kind: AgentKind::Compose,
             agent_messages_map,
             agent_scroll_map,
             agent_following_map,

@@ -28,8 +28,8 @@ impl LayoutMode {
             LayoutMode::Three => &[
                 Panel::Tree,
                 Panel::KnowledgeEntity,
-                Panel::Agent,
                 Panel::Diagnostics,
+                Panel::Agent,
             ],
             LayoutMode::Two => &[
                 Panel::Tree,
@@ -79,17 +79,17 @@ pub fn compute(area: Rect) -> AppLayout {
                 ])
                 .split(main);
 
-            let agent_diag = Layout::default()
+            let middle = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-                .split(columns[2]);
+                .constraints([Constraint::Percentage(85), Constraint::Percentage(15)])
+                .split(columns[1]);
 
             AppLayout {
                 mode,
                 tree_area: columns[0],
-                ke_area: columns[1],
-                agent_area: agent_diag[0],
-                diag_area: agent_diag[1],
+                ke_area: middle[0],
+                diag_area: middle[1],
+                agent_area: columns[2],
                 help_area: help,
             }
         }
