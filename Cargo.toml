@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
   "crates/dendrite-tools",
-  "crates/agent-kms",
+  "crates/agent-compose",
   "crates/agent-knowledge",
   "crates/kms",
   "crates/kms_tui",

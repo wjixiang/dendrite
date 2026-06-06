@@ -1,8 +1,8 @@
 [package]
-name = "agent-kms"
+name = "agent-compose"
 version = "0.1.0"
 edition = "2024"
-description = "KMS adapter for the agentik-core runtime."
+description = "Knowledge construction expert agent context."
 
 [dependencies]
 agentik-core = { workspace = true }
