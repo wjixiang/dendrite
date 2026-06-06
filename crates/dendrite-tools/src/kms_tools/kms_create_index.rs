@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use types::tools::{ToolBuilder, ToolResult};
+use agentik_types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_create_index",
         "Create an index entry under a parent index. Indexes organize entities and knowledge.",
@@ -16,9 +16,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> tools::ToolRegistration {
     .required("title")
     .build();
 
-    tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let parent_ref = input["parent_ref"].as_str().ok_or("missing 'parent_ref'")?;

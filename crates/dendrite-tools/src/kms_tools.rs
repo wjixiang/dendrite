@@ -1,12 +1,12 @@
 //! KMS tool implementations, one module per tool.
 //!
-//! Each submodule defines a single [`tools::ToolRegistration`] via its
+//! Each submodule defines a single [`agentik_core::tools::ToolRegistration`] via its
 //! `registration(svc)` function. This module aggregates them into the
 //! flat list consumed by the agent runtime.
 
 use std::sync::Arc;
 
-use tools::ToolRegistration;
+use agentik_core::tools::ToolRegistration;
 
 mod kms_add_nomenclature;
 mod kms_create_entity;
@@ -23,8 +23,8 @@ mod kms_link_orphans;
 mod kms_list_entities;
 mod kms_move_index;
 mod kms_navigate;
-mod kms_reorganize_children;
 mod kms_rename_knowledge;
+mod kms_reorganize_children;
 mod kms_search_entity;
 mod kms_update_entity;
 mod kms_update_knowledge;

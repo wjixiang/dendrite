@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use types::tools::{ToolBuilder, ToolResult};
+use agentik_types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition =
         ToolBuilder::new("kms_search_entity", "Search entities by nomenclature name (prefix match).")
             .parameter("keyword", "string", "Search keyword")
             .required("keyword")
             .build();
 
-    tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let keyword = input["keyword"].as_str().ok_or("missing 'keyword'")?;

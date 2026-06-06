@@ -8,14 +8,13 @@ members = [
 ]
 
 [workspace.dependencies]
-# agentik-core and its sub-crates are all published from the same upstream repo.
-# They MUST all use the same git URL — Cargo unifies by (name, version, source),
-# so even one straggler on a different URL causes that crate to be compiled twice
-# and breaks type identity for the AgentContext trait, ModelPool, ContentBlock, etc.
+# Each agentik sub-project lives in its own git repo (submodule layout).
+# They MUST all use their correct git URL — Cargo unifies by (name, version, source),
+# so mixing URLs causes duplicate compilations and breaks type identity for
+# AgentContext, ModelPool, ContentBlock, ToolRegistration, etc.
 agentik-core = { git = "https://github.com/wjixiang/agentik-core.git" }
-llm_api = { git = "https://github.com/wjixiang/agentik-core.git" }
-tools = { git = "https://github.com/wjixiang/agentik-core.git" }
-types = { git = "https://github.com/wjixiang/agentik-core.git" }
+agentik-sdk = { git = "https://github.com/wjixiang/agentik-sdk.git" }
+agentik-types = { git = "https://github.com/wjixiang/agentik-types.git" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

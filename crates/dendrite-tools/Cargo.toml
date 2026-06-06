@@ -5,13 +5,10 @@ edition = "2024"
 description = "External (domain-specific) tools for the agentik-core runtime. Built around the KMS service."
 
 [dependencies]
-# KMS service (KMS-specific tool implementations)
 kms = { path = "../kms" }
 
-# agentik-core's tools framework: ToolRegistration, SimpleTool, ToolFunction, Toolset, etc.
-# Sourced from the workspace to guarantee a single crate instance (see [workspace.dependencies]).
-tools = { workspace = true }
-types = { workspace = true }
+agentik-core = { workspace = true }
+agentik-types = { workspace = true }
 
 futures = "0.3"
 serde_json = "1"

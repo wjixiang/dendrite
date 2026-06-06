@@ -59,7 +59,7 @@ pub struct App {
     pub ke_tab: KeTab,
     pub ke_scroll: u16,
     pub agent: Arc<tokio::sync::Mutex<agentik_core::Agent>>,
-    pub agent_event_rx: Option<mpsc::UnboundedReceiver<types::AgentUiEvent>>,
+    pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_types::AgentUiEvent>>,
     pub agent_running: bool,
     pub agent_following: bool,
     pub agent_requesting: bool,

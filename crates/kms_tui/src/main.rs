@@ -17,9 +17,9 @@ use crossterm::{
 };
 use agent_kms::KmsContext;
 use kms::KmsService;
-use llm_api::model::model_pool::ModelPool;
-use llm_api::provider::LlmProvider;
-use llm_api::provider::mimo::MimoProvider;
+use agentik_sdk::model::model_pool::ModelPool;
+use agentik_sdk::provider::LlmProvider;
+use agentik_sdk::provider::mimo::MimoProvider;
 use ratatui::{Terminal, style::Style};
 
 use crate::input::run_app;
@@ -85,7 +85,7 @@ async fn discover_providers() -> Vec<SettingsProvider> {
 
     // MiniMax
     if std::env::var("MINIMAX_API_KEY").is_ok() && std::env::var("MINIMAX_BASE_URL").is_ok() {
-        let minimax_provider = llm_api::provider::minimax::MinimaxProvider::new(None, None, None);
+        let minimax_provider = agentik_sdk::provider::minimax::MinimaxProvider::new(None, None, None);
         let minimax_models = minimax_provider
             .list_models()
             .await
@@ -101,7 +101,7 @@ async fn discover_providers() -> Vec<SettingsProvider> {
 }
 
 fn build_pool(provider: &str, model: &str) -> Option<ModelPool> {
-    use llm_api::provider::LlmProvider;
+    use agentik_sdk::provider::LlmProvider;
     match provider {
         "mimo" => {
             let mimo_provider = MimoProvider::new(None, None, None);
@@ -111,7 +111,7 @@ fn build_pool(provider: &str, model: &str) -> Option<ModelPool> {
             Some(pool)
         }
         "minimax" => {
-            let minimax_provider = llm_api::provider::minimax::MinimaxProvider::new(None, None, None);
+            let minimax_provider = agentik_sdk::provider::minimax::MinimaxProvider::new(None, None, None);
             let m = minimax_provider.get_model(model).ok()?;
             let mut pool = ModelPool::new();
             pool.add_model(m);

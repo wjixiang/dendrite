@@ -1,20 +1,20 @@
 use std::time::Duration;
 
 use agent_kms::KmsContext;
+use agentik_types::AgentUiEvent;
+use agentik_types::messages::ContentBlock;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::{Line, Span};
 use ratatui::style::{Color, Modifier, Style};
-use types::messages::ContentBlock;
-use types::AgentUiEvent;
+use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::state::{Action, App, Panel, SettingsPane};
-use crate::settings::save_settings;
-use crate::widgets::ui;
 use crate::CrosstermBackend;
+use crate::settings::save_settings;
+use crate::state::{Action, App, Panel, SettingsPane};
+use crate::widgets::ui;
+use agentik_sdk::provider::LlmProvider;
 use ratatui::Terminal;
-use llm_api::provider::LlmProvider;
 
 const PANEL_ORDER: [Panel; 4] = [
     Panel::Tree,
@@ -29,7 +29,8 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
-    let end = s.char_indices()
+    let end = s
+        .char_indices()
         .take_while(|(i, _)| *i < max)
         .last()
         .map(|(i, c)| i + c.len_utf8())
@@ -58,15 +59,21 @@ fn format_value(v: &Value) -> String {
 
 fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
     match event {
-        AgentUiEvent::LlmResponse(text) => {
-            text.lines()
-                .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::White))))
-                .collect()
-        }
+        AgentUiEvent::LlmResponse(text) => text
+            .lines()
+            .map(|l| {
+                Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(Color::White),
+                ))
+            })
+            .collect(),
         AgentUiEvent::Thinking(text) => {
             let mut lines = vec![Line::from(Span::styled(
                 "💭 Thinking:",
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             ))];
             for l in text.lines().take(10) {
                 lines.push(Line::from(Span::styled(
@@ -85,7 +92,12 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
         AgentUiEvent::ToolCall { name, input } => {
             let mut lines = vec![Line::from(vec![
                 Span::styled("🔧 ", Style::default().fg(Color::Cyan)),
-                Span::styled(name.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    name.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ])];
             if let Some(obj) = input.as_object() {
                 for (key, val) in obj {
@@ -98,13 +110,20 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
             } else if !input.is_null() {
                 lines.push(Line::from(vec![
                     Span::styled("    ", Style::default()),
-                    Span::styled(truncate(&input.to_string(), MAX_VAL_LEN), Style::default().fg(Color::White)),
+                    Span::styled(
+                        truncate(&input.to_string(), MAX_VAL_LEN),
+                        Style::default().fg(Color::White),
+                    ),
                 ]));
             }
             lines
         }
         AgentUiEvent::ToolResult { ok, content } => {
-            let (icon, color) = if ok { ("✓", Color::Green) } else { ("✗", Color::Red) };
+            let (icon, color) = if ok {
+                ("✓", Color::Green)
+            } else {
+                ("✗", Color::Red)
+            };
             let mut lines = vec![Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(icon, Style::default().fg(color)),
@@ -115,7 +134,10 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
                         for (k, v) in map {
                             lines.push(Line::from(vec![
                                 Span::styled("    ", Style::default()),
-                                Span::styled(format!("{}: ", k), Style::default().fg(Color::DarkGray)),
+                                Span::styled(
+                                    format!("{}: ", k),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
                                 Span::styled(format_value(v), Style::default().fg(color)),
                             ]));
                         }
@@ -150,7 +172,10 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
                     other => {
                         lines.push(Line::from(vec![
                             Span::styled("    ", Style::default()),
-                            Span::styled(truncate(&other.to_string(), MAX_VAL_LEN), Style::default().fg(color)),
+                            Span::styled(
+                                truncate(&other.to_string(), MAX_VAL_LEN),
+                                Style::default().fg(color),
+                            ),
                         ]));
                     }
                 }
@@ -184,7 +209,11 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
     // --- Agent input mode ---
     if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
         return match key {
-            KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 let input = std::mem::take(&mut app.agent_input);
                 if input.is_empty() {
                     app.agent_input_active = false;
@@ -194,16 +223,24 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
                     Action::SubmitAgent(input)
                 }
             }
-            KeyEvent { code: KeyCode::Esc, .. } => {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
                 app.agent_input.clear();
                 app.agent_input_active = false;
                 Action::None
             }
-            KeyEvent { code: KeyCode::Backspace, .. } => {
+            KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            } => {
                 app.agent_input.pop();
                 Action::None
             }
-            KeyEvent { code: KeyCode::Char(c), .. } => {
+            KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            } => {
                 app.agent_input.push(c);
                 Action::None
             }
@@ -214,65 +251,118 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
     // --- Settings modal ---
     if app.settings_modal_open {
         return match key {
-            KeyEvent { code: KeyCode::Esc, .. } => {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
                 app.settings_modal_open = false;
                 Action::None
             }
-            KeyEvent { code: KeyCode::Tab, .. } => {
+            KeyEvent {
+                code: KeyCode::Tab, ..
+            } => {
                 app.settings_pane = match app.settings_pane {
                     SettingsPane::Provider => SettingsPane::Model,
                     SettingsPane::Model => SettingsPane::Provider,
                 };
                 Action::None
             }
-            KeyEvent { code: KeyCode::Up | KeyCode::Char('k'), .. } => {
-                Action::SettingsNav(app.settings_pane, -1)
-            }
-            KeyEvent { code: KeyCode::Down | KeyCode::Char('j'), .. } => {
-                Action::SettingsNav(app.settings_pane, 1)
-            }
-            KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. } => {
-                Action::SettingsConfirm
-            }
+            KeyEvent {
+                code: KeyCode::Up | KeyCode::Char('k'),
+                ..
+            } => Action::SettingsNav(app.settings_pane, -1),
+            KeyEvent {
+                code: KeyCode::Down | KeyCode::Char('j'),
+                ..
+            } => Action::SettingsNav(app.settings_pane, 1),
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => Action::SettingsConfirm,
             _ => Action::None,
         };
     }
 
     // --- Normal mode ---
     match key {
-        KeyEvent { code: KeyCode::Char('q'), modifiers: KeyModifiers::NONE, .. } => Action::Quit,
-        KeyEvent { code: KeyCode::Char('s'), modifiers: KeyModifiers::NONE, .. } => Action::OpenSettings,
-        KeyEvent { code: KeyCode::Tab, .. } => {
-            let idx = PANEL_ORDER.iter().position(|&p| p == app.focused).unwrap_or(0);
+        KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Action::Quit,
+        KeyEvent {
+            code: KeyCode::Char('s'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Action::OpenSettings,
+        KeyEvent {
+            code: KeyCode::Tab, ..
+        } => {
+            let idx = PANEL_ORDER
+                .iter()
+                .position(|&p| p == app.focused)
+                .unwrap_or(0);
             let next = (idx + 1) % PANEL_ORDER.len();
             app.focused = PANEL_ORDER[next];
             Action::None
         }
-        KeyEvent { code: KeyCode::BackTab, .. } => {
-            let idx = PANEL_ORDER.iter().position(|&p| p == app.focused).unwrap_or(0);
-            let prev = if idx == 0 { PANEL_ORDER.len() - 1 } else { idx - 1 };
+        KeyEvent {
+            code: KeyCode::BackTab,
+            ..
+        } => {
+            let idx = PANEL_ORDER
+                .iter()
+                .position(|&p| p == app.focused)
+                .unwrap_or(0);
+            let prev = if idx == 0 {
+                PANEL_ORDER.len() - 1
+            } else {
+                idx - 1
+            };
             app.focused = PANEL_ORDER[prev];
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('H'), .. } => {
-            let idx = PANEL_ORDER.iter().position(|&p| p == app.focused).unwrap_or(0);
-            let prev = if idx == 0 { PANEL_ORDER.len() - 1 } else { idx - 1 };
+        KeyEvent {
+            code: KeyCode::Char('H'),
+            ..
+        } => {
+            let idx = PANEL_ORDER
+                .iter()
+                .position(|&p| p == app.focused)
+                .unwrap_or(0);
+            let prev = if idx == 0 {
+                PANEL_ORDER.len() - 1
+            } else {
+                idx - 1
+            };
             app.focused = PANEL_ORDER[prev];
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('L'), .. } => {
-            let idx = PANEL_ORDER.iter().position(|&p| p == app.focused).unwrap_or(0);
+        KeyEvent {
+            code: KeyCode::Char('L'),
+            ..
+        } => {
+            let idx = PANEL_ORDER
+                .iter()
+                .position(|&p| p == app.focused)
+                .unwrap_or(0);
             let next = (idx + 1) % PANEL_ORDER.len();
             app.focused = PANEL_ORDER[next];
             Action::None
         }
-        KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE, .. }
-            if app.focused == Panel::Agent && !app.agent_running => {
+        KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            ..
+        } if app.focused == Panel::Agent && !app.agent_running => {
             app.agent_input_active = true;
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('t'), modifiers: KeyModifiers::NONE, .. }
-            if app.focused == Panel::KnowledgeEntity => {
+        KeyEvent {
+            code: KeyCode::Char('t'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } if app.focused == Panel::KnowledgeEntity => {
             app.ke_tab = match app.ke_tab {
                 crate::state::KeTab::Knowledge => crate::state::KeTab::Entity,
                 crate::state::KeTab::Entity => crate::state::KeTab::Knowledge,
@@ -280,114 +370,122 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             app.ke_scroll = 0;
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('j') | KeyCode::Down, .. } => {
-            match app.focused {
-                Panel::Tree => {
-                    if let Some(sel) = app.tree_state.selected() {
-                        let next = sel.saturating_add(1).min(app.tree_items.len().saturating_sub(1));
-                        app.tree_state.select(Some(next));
-                        Action::TreeChanged
-                    } else {
-                        Action::None
-                    }
-                }
-                Panel::KnowledgeEntity => {
-                    let lines = match app.ke_tab {
-                        crate::state::KeTab::Knowledge => &app.knowledge_lines,
-                        crate::state::KeTab::Entity => &app.entity_lines,
-                    };
-                    if app.ke_scroll < lines.len() as u16 {
-                        app.ke_scroll += 1;
-                    }
-                    Action::None
-                }
-                Panel::Diagnostics => {
-                    if app.scroll_diag < app.diagnostic_lines.len() as u16 {
-                        app.scroll_diag += 1;
-                    }
-                    Action::None
-                }
-                Panel::Agent => {
-                    app.agent_following = false;
-                    if app.agent_scroll < app.agent_lines.len() {
-                        app.agent_scroll += 1;
-                    }
+        KeyEvent {
+            code: KeyCode::Char('j') | KeyCode::Down,
+            ..
+        } => match app.focused {
+            Panel::Tree => {
+                if let Some(sel) = app.tree_state.selected() {
+                    let next = sel
+                        .saturating_add(1)
+                        .min(app.tree_items.len().saturating_sub(1));
+                    app.tree_state.select(Some(next));
+                    Action::TreeChanged
+                } else {
                     Action::None
                 }
             }
-        }
-        KeyEvent { code: KeyCode::PageDown, .. } => {
-            match app.focused {
-                Panel::Agent => {
-                    app.agent_following = false;
-                    let page = app.agent_visible_height.saturating_sub(1).max(1);
-                    app.agent_scroll = app.agent_scroll.saturating_add(page);
-                    Action::None
+            Panel::KnowledgeEntity => {
+                let lines = match app.ke_tab {
+                    crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                    crate::state::KeTab::Entity => &app.entity_lines,
+                };
+                if app.ke_scroll < lines.len() as u16 {
+                    app.ke_scroll += 1;
                 }
-                _ => Action::None,
+                Action::None
             }
-        }
-        KeyEvent { code: KeyCode::Char('k') | KeyCode::Up, .. } => {
-            match app.focused {
-                Panel::Tree => {
-                    if let Some(sel) = app.tree_state.selected() {
-                        app.tree_state.select(Some(sel.saturating_sub(1)));
-                        Action::TreeChanged
-                    } else {
-                        Action::None
-                    }
+            Panel::Diagnostics => {
+                if app.scroll_diag < app.diagnostic_lines.len() as u16 {
+                    app.scroll_diag += 1;
                 }
-                Panel::KnowledgeEntity => {
-                    app.ke_scroll = app.ke_scroll.saturating_sub(1);
-                    Action::None
+                Action::None
+            }
+            Panel::Agent => {
+                app.agent_following = false;
+                if app.agent_scroll < app.agent_lines.len() {
+                    app.agent_scroll += 1;
                 }
-                Panel::Diagnostics => {
-                    app.scroll_diag = app.scroll_diag.saturating_sub(1);
-                    Action::None
-                }
-                Panel::Agent => {
-                    app.agent_following = false;
-                    app.agent_scroll = app.agent_scroll.saturating_sub(1);
+                Action::None
+            }
+        },
+        KeyEvent {
+            code: KeyCode::PageDown,
+            ..
+        } => match app.focused {
+            Panel::Agent => {
+                app.agent_following = false;
+                let page = app.agent_visible_height.saturating_sub(1).max(1);
+                app.agent_scroll = app.agent_scroll.saturating_add(page);
+                Action::None
+            }
+            _ => Action::None,
+        },
+        KeyEvent {
+            code: KeyCode::Char('k') | KeyCode::Up,
+            ..
+        } => match app.focused {
+            Panel::Tree => {
+                if let Some(sel) = app.tree_state.selected() {
+                    app.tree_state.select(Some(sel.saturating_sub(1)));
+                    Action::TreeChanged
+                } else {
                     Action::None
                 }
             }
-        }
-        KeyEvent { code: KeyCode::PageUp, .. } => {
-            match app.focused {
-                Panel::Agent => {
-                    app.agent_following = false;
-                    let page = app.agent_visible_height.saturating_sub(1).max(1);
-                    app.agent_scroll = app.agent_scroll.saturating_sub(page);
-                    Action::None
-                }
-                _ => Action::None,
+            Panel::KnowledgeEntity => {
+                app.ke_scroll = app.ke_scroll.saturating_sub(1);
+                Action::None
             }
-        }
-        KeyEvent { code: KeyCode::End, .. } => {
-            match app.focused {
-                Panel::Agent => {
-                    app.agent_following = true;
-                    let visible = app.agent_visible_height.max(1);
-                    app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
-                    Action::None
-                }
-                Panel::KnowledgeEntity => {
-                    let lines = match app.ke_tab {
-                        crate::state::KeTab::Knowledge => &app.knowledge_lines,
-                        crate::state::KeTab::Entity => &app.entity_lines,
-                    };
-                    app.ke_scroll = (lines.len() as u16).saturating_sub(1);
-                    Action::None
-                }
-                Panel::Diagnostics => {
-                    app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
-                    Action::None
-                }
-                _ => Action::None,
+            Panel::Diagnostics => {
+                app.scroll_diag = app.scroll_diag.saturating_sub(1);
+                Action::None
             }
-        }
-        KeyEvent { code: KeyCode::Char('G'), .. }
-            if app.focused == Panel::Agent && !app.agent_input_active => {
+            Panel::Agent => {
+                app.agent_following = false;
+                app.agent_scroll = app.agent_scroll.saturating_sub(1);
+                Action::None
+            }
+        },
+        KeyEvent {
+            code: KeyCode::PageUp,
+            ..
+        } => match app.focused {
+            Panel::Agent => {
+                app.agent_following = false;
+                let page = app.agent_visible_height.saturating_sub(1).max(1);
+                app.agent_scroll = app.agent_scroll.saturating_sub(page);
+                Action::None
+            }
+            _ => Action::None,
+        },
+        KeyEvent {
+            code: KeyCode::End, ..
+        } => match app.focused {
+            Panel::Agent => {
+                app.agent_following = true;
+                let visible = app.agent_visible_height.max(1);
+                app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
+                Action::None
+            }
+            Panel::KnowledgeEntity => {
+                let lines = match app.ke_tab {
+                    crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                    crate::state::KeTab::Entity => &app.entity_lines,
+                };
+                app.ke_scroll = (lines.len() as u16).saturating_sub(1);
+                Action::None
+            }
+            Panel::Diagnostics => {
+                app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
+                Action::None
+            }
+            _ => Action::None,
+        },
+        KeyEvent {
+            code: KeyCode::Char('G'),
+            ..
+        } if app.focused == Panel::Agent && !app.agent_input_active => {
             app.agent_following = true;
             let visible = app.agent_visible_height.max(1);
             app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
@@ -420,10 +518,7 @@ pub async fn run_app(
                         app.agent_lines.extend(event_to_lines(event));
                         if app.agent_following && app.agent_lines.len() > 1 {
                             let visible = app.agent_visible_height.max(1);
-                            app.agent_scroll = app
-                                .agent_lines
-                                .len()
-                                .saturating_sub(visible);
+                            app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
                         }
                     }
                 }
@@ -447,73 +542,78 @@ pub async fn run_app(
             loop {
                 let event = crossterm::event::read()?;
                 match event {
-                    Event::Key(key) => {
-                        match handle_key_event(key, app) {
-                            Action::Quit => app.should_quit = true,
-                            Action::TreeChanged => app.on_tree_select().await,
-                            Action::SubmitAgent(input) => spawn_agent_task(app, input),
-                            Action::OpenSettings => {
-                                app.settings_modal_open = true;
+                    Event::Key(key) => match handle_key_event(key, app) {
+                        Action::Quit => app.should_quit = true,
+                        Action::TreeChanged => app.on_tree_select().await,
+                        Action::SubmitAgent(input) => spawn_agent_task(app, input),
+                        Action::OpenSettings => {
+                            app.settings_modal_open = true;
+                        }
+                        Action::SettingsNav(pane, delta) => match pane {
+                            SettingsPane::Provider => {
+                                let max = app.providers.len().saturating_sub(1);
+                                app.settings_selected_provider =
+                                    (app.settings_selected_provider as isize + delta)
+                                        .clamp(0, max as isize)
+                                        as usize;
                             }
-                            Action::SettingsNav(pane, delta) => {
-                                match pane {
-                                    SettingsPane::Provider => {
-                                        let max = app.providers.len().saturating_sub(1);
-                                        app.settings_selected_provider = (app.settings_selected_provider as isize + delta)
-                                            .clamp(0, max as isize) as usize;
-                                    }
-                                    SettingsPane::Model => {
-                                        let provider_idx = app.settings_selected_provider;
-                                        if let Some(provider) = app.providers.get(provider_idx) {
-                                            let max = provider.models.len().saturating_sub(1);
-                                            app.settings_selected_model = (app.settings_selected_model as isize + delta)
-                                                .clamp(0, max as isize) as usize;
-                                        }
-                                    }
-                                }
-                            }
-                            Action::SettingsSwitchPane(pane) => {
-                                app.settings_pane = pane;
-                            }
-                            Action::SettingsConfirm => {
+                            SettingsPane::Model => {
                                 let provider_idx = app.settings_selected_provider;
-                                let model_idx = app.settings_selected_model;
-
-                                let new_provider = app.providers.get(provider_idx).map(|p| p.name.clone());
-                                let new_model = app.providers.get(provider_idx)
-                                    .and_then(|p| p.models.get(model_idx).cloned());
-
-                                if let (Some(new_provider), Some(new_model)) = (new_provider, new_model) {
-                                    if new_provider != app.current_provider || new_model != app.current_model {
-                                        if let Some(pool) = build_pool(&new_provider, &new_model) {
-                                            let new_agent = agentik_core::Agent::builder()
-                                                .with_model_pool(Arc::new(pool))
-                                                .with_context(Arc::new(KmsContext::new(Arc::new(app.svc.clone()))))
-                                                .build()
-                                                .await
-                                                .map_err(|e| e.to_string())?;
-
-                                            let old_agent = std::mem::replace(
-                                                &mut *app.agent.blocking_lock(),
-                                                new_agent,
-                                            );
-                                            drop(old_agent);
-
-                                            app.current_provider = new_provider.clone();
-                                            app.current_model = new_model.clone();
-                                            save_settings(&new_provider, &new_model);
-                                        }
-                                    }
+                                if let Some(provider) = app.providers.get(provider_idx) {
+                                    let max = provider.models.len().saturating_sub(1);
+                                    app.settings_selected_model =
+                                        (app.settings_selected_model as isize + delta)
+                                            .clamp(0, max as isize)
+                                            as usize;
                                 }
-                                app.settings_modal_open = false;
                             }
-                            Action::None => {}
+                        },
+                        Action::SettingsSwitchPane(pane) => {
+                            app.settings_pane = pane;
                         }
-                    }
-                    Event::Paste(s) => {
-                        if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
-                            app.agent_input.push_str(&s);
+                        Action::SettingsConfirm => {
+                            let provider_idx = app.settings_selected_provider;
+                            let model_idx = app.settings_selected_model;
+
+                            let new_provider =
+                                app.providers.get(provider_idx).map(|p| p.name.clone());
+                            let new_model = app
+                                .providers
+                                .get(provider_idx)
+                                .and_then(|p| p.models.get(model_idx).cloned());
+
+                            if let (Some(new_provider), Some(new_model)) = (new_provider, new_model)
+                                && (new_provider != app.current_provider
+                                    || new_model != app.current_model)
+                                && let Some(pool) = build_pool(&new_provider, &new_model)
+                            {
+                                let new_agent = agentik_core::Agent::builder()
+                                    .with_model_pool(Arc::new(pool))
+                                    .with_context(Arc::new(KmsContext::new(Arc::new(
+                                        app.svc.clone(),
+                                    ))))
+                                    .build()
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+
+                                let old_agent =
+                                    std::mem::replace(&mut *app.agent.blocking_lock(), new_agent);
+                                drop(old_agent);
+
+                                app.current_provider = new_provider.clone();
+                                app.current_model = new_model.clone();
+                                save_settings(&new_provider, &new_model);
+                            }
+                            app.settings_modal_open = false;
                         }
+                        Action::None => {}
+                    },
+                    Event::Paste(s)
+                        if app.focused == Panel::Agent
+                            && app.agent_input_active
+                            && !app.agent_running =>
+                    {
+                        app.agent_input.push_str(&s);
                     }
                     _ => {}
                 }
@@ -531,9 +631,9 @@ pub async fn run_app(
     Ok(())
 }
 
-fn build_pool(provider: &str, model: &str) -> Option<llm_api::model::model_pool::ModelPool> {
-    use llm_api::model::model_pool::ModelPool;
-    use llm_api::provider::mimo::MimoProvider;
+fn build_pool(provider: &str, model: &str) -> Option<agentik_sdk::model::model_pool::ModelPool> {
+    use agentik_sdk::model::model_pool::ModelPool;
+    use agentik_sdk::provider::mimo::MimoProvider;
 
     match provider {
         "mimo" => {
@@ -544,7 +644,8 @@ fn build_pool(provider: &str, model: &str) -> Option<llm_api::model::model_pool:
             Some(pool)
         }
         "minimax" => {
-            let minimax_provider = llm_api::provider::minimax::MinimaxProvider::new(None, None, None);
+            let minimax_provider =
+                agentik_sdk::provider::minimax::MinimaxProvider::new(None, None, None);
             let m = minimax_provider.get_model(model).ok()?;
             let mut pool = ModelPool::new();
             pool.add_model(m);

@@ -8,4 +8,4 @@
 pub mod kms_tools;
 
 pub use kms_tools::registrations;
-pub use tools::ToolRegistration;
+pub use agentik_core::tools::ToolRegistration;

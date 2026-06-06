@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use types::tools::{ToolBuilder, ToolResult};
+use agentik_types::tools::{ToolBuilder, ToolResult};
 use uuid::Uuid;
 
-pub fn registration(svc: Arc<kms::KmsService>) -> tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_delete_nomenclature",
         "Delete a nomenclature from an entity. The entity must retain at least one nomenclature.",
@@ -15,9 +15,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> tools::ToolRegistration {
     .required("nomenclature_id")
     .build();
 
-    tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let entity_id = Uuid::parse_str(input["entity_id"].as_str().ok_or("missing 'entity_id'")?)
