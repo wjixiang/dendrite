@@ -195,6 +195,19 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         KeyEvent {
             code: KeyCode::End, ..
         } => handle_end(app),
+        KeyEvent {
+            code: KeyCode::Char('G'),
+            ..
+        } if app.focused == Panel::Agent && !app.agent_input_active => {
+            // "G" — re-anchor the Agent panel to the bottom and
+            // re-enable auto-follow, in one keystroke. The render
+            // pass clamps the oversized scroll offset back to the
+            // real last line, so the user always lands at the
+            // tail.
+            app.agent_auto_follow = true;
+            app.agent_scroll = u16::MAX;
+            Action::None
+        }
         _ => Action::None,
     }
 }
@@ -228,7 +241,18 @@ fn handle_scroll_down(app: &mut App) -> Action {
             }
             Action::None
         }
-        Panel::Agent => Action::None,
+        Panel::Agent => {
+            // Any manual scroll disengages auto-follow. The user
+            // has expressed an intent to inspect older messages;
+            // silently re-snapping to the bottom on the next
+            // event would fight that intent.
+            app.agent_auto_follow = false;
+            // Bound checked at render time. u16::MAX is impossible
+            // to reach via single `+1` increments from a u16::MAX-1
+            // starting point, so no overflow here.
+            app.agent_scroll = app.agent_scroll.saturating_add(1);
+            Action::None
+        }
     }
 }
 
@@ -250,12 +274,24 @@ fn handle_scroll_up(app: &mut App) -> Action {
             app.scroll_diag = app.scroll_diag.saturating_sub(1);
             Action::None
         }
-        Panel::Agent => Action::None,
+        Panel::Agent => {
+            app.agent_auto_follow = false;
+            app.agent_scroll = app.agent_scroll.saturating_sub(1);
+            Action::None
+        }
     }
 }
 
 fn handle_end(app: &mut App) -> Action {
     match app.focused {
+        Panel::Agent => {
+            // End in the Agent panel re-enables auto-follow and
+            // snaps to the bottom (overshoot; the render pass
+            // clamps to the real last visual line).
+            app.agent_auto_follow = true;
+            app.agent_scroll = u16::MAX;
+            Action::None
+        }
         Panel::KnowledgeEntity => {
             let lines = match app.ke_tab {
                 crate::state::KeTab::Knowledge => &app.knowledge_lines,
@@ -294,6 +330,14 @@ pub async fn run_app(
                         if let Some(msg) = agent_event_to_message(event) {
                             let kind = app.agent_kind;
                             app.agent_messages_map.get_mut(&kind).unwrap().push(msg);
+                            // Auto-follow: if the user has not
+                            // disengaged, anchor the scroll to the
+                            // bottom of the new content. The
+                            // render pass will clamp the overshoot
+                            // to the true last visual line.
+                            if app.agent_auto_follow {
+                                app.agent_scroll = u16::MAX;
+                            }
                         }
                     }
                 }
@@ -325,6 +369,12 @@ pub async fn run_app(
                         Action::SwitchAgent => {
                             let next = app.agent_kind.toggle();
                             app.agent_kind = next;
+                            // Reset scroll AND auto-follow when
+                            // switching agents; the new
+                            // conversation should start at the top
+                            // and follow new content.
+                            app.agent_scroll = 0;
+                            app.agent_auto_follow = true;
                             app.toast
                                 .info(format!("Switched to {} agent", app.agent_kind.label()));
                         }
@@ -456,6 +506,11 @@ fn spawn_agent_task(app: &mut App, user_input: String) {
     });
     app.agent_messages_mut().push(ChatMessage::Divider);
     app.agent_running = true;
+    // Submitting a new task is the canonical signal to follow the
+    // tail; the user has explicitly opted in to seeing the
+    // conversation unfold.
+    app.agent_auto_follow = true;
+    app.agent_scroll = u16::MAX;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.agent_event_rx = Some(rx);

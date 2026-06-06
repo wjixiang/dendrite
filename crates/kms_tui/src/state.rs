@@ -111,6 +111,19 @@ pub struct App {
     pub agent_requesting: bool,
     pub spinner_tick: usize,
 
+    /// Vertical scroll offset of the Agent conversation panel,
+    /// measured in *visual* (post-wrap) lines. Clamped to the
+    /// actual wrapped content height on every render. Reset to 0
+    /// when the user switches agent kind.
+    pub agent_scroll: u16,
+
+    /// When `true`, the panel re-anchors `agent_scroll` to the
+    /// bottom every time a new message arrives (or an agent event
+    /// is processed). Set to `false` the moment the user manually
+    /// scrolls (j / k) and only re-enabled by an explicit
+    /// "follow-tail" command (G / End).
+    pub agent_auto_follow: bool,
+
     pub agent_input: String,
     pub agent_input_active: bool,
 
@@ -183,6 +196,8 @@ impl App {
             agent_running: false,
             agent_requesting: false,
             spinner_tick: 0,
+            agent_scroll: 0,
+            agent_auto_follow: true,
             agent_input: String::new(),
             agent_input_active: false,
             settings_modal_open: false,
