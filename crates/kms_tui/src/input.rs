@@ -193,25 +193,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             ..
         } => handle_scroll_up(app),
         KeyEvent {
-            code: KeyCode::PageDown,
-            ..
-        } => handle_page_down(app),
-        KeyEvent {
-            code: KeyCode::PageUp,
-            ..
-        } => handle_page_up(app),
-        KeyEvent {
             code: KeyCode::End, ..
         } => handle_end(app),
-        KeyEvent {
-            code: KeyCode::Char('G'),
-            ..
-        } if app.focused == Panel::Agent && !app.agent_input_active => {
-            app.set_agent_following(true);
-            let visible = app.agent_visible_height.max(1);
-            app.set_agent_scroll(app.agent_messages().len().saturating_sub(visible));
-            Action::None
-        }
         _ => Action::None,
     }
 }
@@ -245,15 +228,7 @@ fn handle_scroll_down(app: &mut App) -> Action {
             }
             Action::None
         }
-        Panel::Agent => {
-            app.set_agent_following(false);
-            let scroll = app.agent_scroll();
-            let lines_len = app.agent_messages().len();
-            if scroll < lines_len {
-                app.set_agent_scroll(scroll + 1);
-            }
-            Action::None
-        }
+        Panel::Agent => Action::None,
     }
 }
 
@@ -275,46 +250,12 @@ fn handle_scroll_up(app: &mut App) -> Action {
             app.scroll_diag = app.scroll_diag.saturating_sub(1);
             Action::None
         }
-        Panel::Agent => {
-            app.set_agent_following(false);
-            app.set_agent_scroll(app.agent_scroll().saturating_sub(1));
-            Action::None
-        }
-    }
-}
-
-fn handle_page_down(app: &mut App) -> Action {
-    match app.focused {
-        Panel::Agent => {
-            app.set_agent_following(false);
-            let page = app.agent_visible_height.saturating_sub(1).max(1);
-            app.set_agent_scroll(app.agent_scroll().saturating_add(page));
-            Action::None
-        }
-        _ => Action::None,
-    }
-}
-
-fn handle_page_up(app: &mut App) -> Action {
-    match app.focused {
-        Panel::Agent => {
-            app.set_agent_following(false);
-            let page = app.agent_visible_height.saturating_sub(1).max(1);
-            app.set_agent_scroll(app.agent_scroll().saturating_sub(page));
-            Action::None
-        }
-        _ => Action::None,
+        Panel::Agent => Action::None,
     }
 }
 
 fn handle_end(app: &mut App) -> Action {
     match app.focused {
-        Panel::Agent => {
-            app.set_agent_following(true);
-            let visible = app.agent_visible_height.max(1);
-            app.set_agent_scroll(app.agent_messages().len().saturating_sub(visible));
-            Action::None
-        }
         Panel::KnowledgeEntity => {
             let lines = match app.ke_tab {
                 crate::state::KeTab::Knowledge => &app.knowledge_lines,
@@ -353,14 +294,6 @@ pub async fn run_app(
                         if let Some(msg) = agent_event_to_message(event) {
                             let kind = app.agent_kind;
                             app.agent_messages_map.get_mut(&kind).unwrap().push(msg);
-                            if app.agent_following_map[&kind]
-                                && app.agent_messages_map[&kind].len() > 1
-                            {
-                                let visible = app.agent_visible_height.max(1);
-                                let scroll =
-                                    app.agent_messages_map[&kind].len().saturating_sub(visible);
-                                app.agent_scroll_map.insert(kind, scroll);
-                            }
                         }
                     }
                 }
@@ -523,7 +456,6 @@ fn spawn_agent_task(app: &mut App, user_input: String) {
     });
     app.agent_messages_mut().push(ChatMessage::Divider);
     app.agent_running = true;
-    app.set_agent_following(true);
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.agent_event_rx = Some(rx);

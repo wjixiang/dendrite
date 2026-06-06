@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -11,31 +11,16 @@ use crate::theme::Theme;
 
 const SPINNER_FRAMES: &[&str] = &["\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}"];
 
-pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::layout::Rect) {
+pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
-    let visible_height = chunks[0].height.saturating_sub(2) as usize;
-    let content_width = chunks[0].width as usize;
-
     let rendered_lines: Vec<Line<'static>> = app
         .agent_messages()
         .iter()
-        .flat_map(|msg| msg.to_lines(theme, content_width))
-        .collect();
-
-    let content_lines = rendered_lines.len();
-    let max_scroll = content_lines.saturating_sub(visible_height);
-    let scroll = app.agent_scroll().min(max_scroll);
-    app.set_agent_scroll(scroll);
-    app.agent_visible_height = visible_height;
-
-    let visible_content: Vec<_> = rendered_lines
-        .into_iter()
-        .skip(scroll)
-        .take(visible_height)
+        .flat_map(|msg| msg.to_lines(theme))
         .collect();
 
     let kind_label = app.agent_kind.label();
@@ -43,7 +28,7 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: ratatui::
         .title(format!(" Agent [{}] ", kind_label))
         .borders(Borders::ALL)
         .border_style(theme.focused_border_style(app.focused == Panel::Agent));
-    let conv = Paragraph::new(visible_content)
+    let conv = Paragraph::new(rendered_lines)
         .block(conv_block)
         .wrap(Wrap { trim: false });
     f.render_widget(conv, chunks[0]);

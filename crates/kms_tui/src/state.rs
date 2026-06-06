@@ -106,9 +106,6 @@ pub struct App {
     pub agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
     pub agent_kind: AgentKind,
     pub agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>>,
-    pub agent_scroll_map: HashMap<AgentKind, usize>,
-    pub agent_following_map: HashMap<AgentKind, bool>,
-    pub agent_visible_height: usize,
     pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_types::AgentUiEvent>>,
     pub agent_running: bool,
     pub agent_requesting: bool,
@@ -164,15 +161,6 @@ impl App {
             m
         };
 
-        let agent_scroll_map = HashMap::from([
-            (AgentKind::Compose, 0),
-            (AgentKind::Knowledge, 0),
-        ]);
-        let agent_following_map = HashMap::from([
-            (AgentKind::Compose, true),
-            (AgentKind::Knowledge, true),
-        ]);
-
         Self {
             should_quit: false,
             theme: Theme::default_theme(),
@@ -191,9 +179,6 @@ impl App {
             agents,
             agent_kind: AgentKind::Compose,
             agent_messages_map,
-            agent_scroll_map,
-            agent_following_map,
-            agent_visible_height: 10,
             agent_event_rx: None,
             agent_running: false,
             agent_requesting: false,
@@ -216,23 +201,6 @@ impl App {
 
     pub fn agent_messages_mut(&mut self) -> &mut Vec<ChatMessage> {
         self.agent_messages_map.get_mut(&self.agent_kind).unwrap()
-    }
-
-    pub fn agent_scroll(&self) -> usize {
-        self.agent_scroll_map[&self.agent_kind]
-    }
-
-    pub fn set_agent_scroll(&mut self, val: usize) {
-        self.agent_scroll_map.insert(self.agent_kind, val);
-    }
-
-    #[allow(dead_code)]
-    pub fn agent_following(&self) -> bool {
-        self.agent_following_map[&self.agent_kind]
-    }
-
-    pub fn set_agent_following(&mut self, val: bool) {
-        self.agent_following_map.insert(self.agent_kind, val);
     }
 
     pub async fn on_tree_select(&mut self) {

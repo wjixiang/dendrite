@@ -31,7 +31,6 @@ pub fn render_help_bar(theme: &Theme, app: &App) -> Paragraph<'static> {
                 vec![
                     Span::styled(" [Enter] Type ", Style::default().fg(theme.help_key)),
                     Span::styled(" [a] Agent ", Style::default().fg(theme.help_key)),
-                    Span::styled(" [G] Bottom ", Style::default().fg(theme.help_key)),
                 ]
             }
         }

@@ -8,6 +8,12 @@ const MAX_THINKING_LINES: usize = 10;
 const MAX_TOOL_RESULT_LINES: usize = 6;
 const MAX_ARRAY_ITEMS: usize = 8;
 
+/// Upper bound for the user-message underline separator. Long enough to
+/// visually fill wide panels, short enough to never wrap on narrow
+/// ones. The actual wrap is delegated to `Paragraph::scroll` so this
+/// value is purely cosmetic.
+const USER_SEPARATOR_LIMIT: usize = 80;
+
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
     User { text: String },
@@ -21,9 +27,17 @@ pub enum ChatMessage {
 }
 
 impl ChatMessage {
-    pub fn to_lines(&self, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    /// Render this message as a sequence of *logical* lines.
+    ///
+    /// Note: this function does **not** perform visual word-wrapping.
+    /// Word-wrap is the responsibility of `ratatui::Paragraph` (via
+    /// `Wrap`), which knows the actual widget width at draw time. Doing
+    /// wrap here would risk double-wrapping and, more importantly,
+    /// would force the caller to pre-clamp the visible content, which
+    /// is what the previous height-clamp bug stemmed from.
+    pub fn to_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
         match self {
-            ChatMessage::User { text } => render_user_message(text, theme, width),
+            ChatMessage::User { text } => render_user_message(text, theme),
             ChatMessage::Assistant { text } => render_assistant_message(text, theme),
             ChatMessage::Thinking { text } => render_thinking(text, theme),
             ChatMessage::ToolCall { name, input } => render_tool_call(name, input, theme),
@@ -41,14 +55,13 @@ impl ChatMessage {
     }
 }
 
-fn render_user_message(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
-    let max_content_width = width.saturating_sub(6).max(20);
+fn render_user_message(text: &str, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
         format!("{}{}", theme.user_prefix, text),
         theme.user_style(),
     )));
-    let separator = "\u{2500}".repeat(max_content_width.min(40));
+    let separator = "\u{2500}".repeat(USER_SEPARATOR_LIMIT);
     lines.push(Line::from(Span::styled(
         separator,
         Style::default().fg(theme.user_message),
