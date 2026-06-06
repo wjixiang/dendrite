@@ -53,12 +53,20 @@ impl AgentBuilder {
     }
 
     pub async fn build(self) -> Result<Agent, AgentError> {
-        let model_pool = self.model_pool.ok_or_else(|| AgentError::MissingConfig("model_pool".to_string()))?;
+        let model_pool = self
+            .model_pool
+            .ok_or_else(|| AgentError::MissingConfig("model_pool".to_string()))?;
         let kms = if let Some(kms) = self.kms {
             kms
         } else {
-            let db_path = self.kms_db_path.ok_or_else(|| AgentError::MissingConfig("kms or kms_db_path".to_string()))?;
-            Arc::new(kms::KmsService::new(&db_path).await.map_err(AgentError::MissingConfig)?)
+            let db_path = self
+                .kms_db_path
+                .ok_or_else(|| AgentError::MissingConfig("kms or kms_db_path".to_string()))?;
+            Arc::new(
+                kms::KmsService::new(&db_path)
+                    .await
+                    .map_err(AgentError::MissingConfig)?,
+            )
         };
 
         let mut toolset = Toolset::default();

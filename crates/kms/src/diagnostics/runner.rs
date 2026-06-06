@@ -16,10 +16,13 @@ use super::{CodeDescription, Diagnostic, Severity};
 async fn run_index_diagnostics(
     storage: &Storage,
 ) -> Result<(Vec<Diagnostic>, HashMap<Uuid, String>), String> {
-    use super::index_rules::{EmptyLeaf, ExcessiveChildren};
+    use super::index_rules::{EmptyLeaf, ExcessiveChildren, InconsistentPrefixes};
 
-    let rules: Vec<Box<dyn IndexDiagnosticRule>> =
-        vec![Box::new(EmptyLeaf), Box::new(ExcessiveChildren)];
+    let rules: Vec<Box<dyn IndexDiagnosticRule>> = vec![
+        Box::new(EmptyLeaf),
+        Box::new(ExcessiveChildren),
+        Box::new(InconsistentPrefixes),
+    ];
 
     let mut issues = Vec::new();
     let mut path_map = HashMap::new();
@@ -68,10 +71,11 @@ async fn run_knowledge_diagnostics(
     index_path_map: &HashMap<Uuid, String>,
 ) -> Result<Vec<Diagnostic>, String> {
     use super::knowledge_rules::{
-        EmptyContent, NoEntities, OrphanKnowledge, TitleMissingEntityPrefix,
+        BoldAsHeading, EmptyContent, NoEntities, OrphanKnowledge, TitleMissingEntityPrefix,
     };
 
     let rules: Vec<Box<dyn KnowledgeDiagnosticRule>> = vec![
+        Box::new(BoldAsHeading),
         Box::new(OrphanKnowledge),
         Box::new(EmptyContent),
         Box::new(NoEntities),

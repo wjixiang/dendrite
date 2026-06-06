@@ -27,6 +27,7 @@ const VAGUE_TITLE_KEYWORDS: &[&str] = &[
     "说明",
     "介绍",
     "基本概念",
+    "特征",
 ];
 
 impl KnowledgeDiagnosticRule for NestedKnowledge {
@@ -166,6 +167,43 @@ impl KnowledgeDiagnosticRule for NoEntities {
 
     fn name(&self) -> &str {
         "knowledge.no_entities"
+    }
+}
+
+static BOLD_ONLY_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\*\*.+\*\*\s*$").unwrap());
+
+pub struct BoldAsHeading;
+
+impl KnowledgeDiagnosticRule for BoldAsHeading {
+    fn check(&self, knowledge: &Knowledge) -> Option<Diagnostic> {
+        let content = knowledge.content.as_deref().unwrap_or("");
+        let matches: Vec<&str> = BOLD_ONLY_LINE_RE.find_iter(content).map(|m| m.as_str()).collect();
+        let offending = &matches[0..matches.len().min(3)];
+        if matches.is_empty() {
+            return None;
+        }
+        Some(Diagnostic {
+            code: self.name().to_string(),
+            code_description: Some(CodeDescription {
+                href: "kms://diagnostics/knowledge/bold-as-heading".to_string(),
+            }),
+            location: knowledge.title.clone(),
+            severity: Severity::Error,
+            message: format!(
+                "使用粗体文本作为标题（共{}处）：{}",
+                matches.len(),
+                offending.join(", ")
+            ),
+            suggested_actions: vec![
+                "将粗体文本替换为 Markdown 标题语法：`**标题**` → `## 标题`".to_string(),
+                "粗体 `**文本**` 仅用于行内强调，不可独占一行充当标题".to_string(),
+            ],
+        })
+    }
+
+    fn name(&self) -> &str {
+        "knowledge.bold_as_heading"
     }
 }
 

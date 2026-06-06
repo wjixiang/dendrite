@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::storage::{
     error::StorageError,
-    types::{Entity, Index, Knowledge},
+    types::{Entity, Index, Knowledge, Nomenclature},
 };
 
 pub trait EntityRepo {
@@ -13,6 +13,9 @@ pub trait EntityRepo {
     async fn find_by_exact_name(&self, name: &str) -> Result<Option<Entity>, StorageError>;
     async fn update(&self, entity: &Entity) -> Result<(), StorageError>;
     async fn delete(&self, id: Uuid) -> Result<(), StorageError>;
+    async fn add_nomenclature(&self, entity_id: Uuid, nomenclature: &Nomenclature) -> Result<(), StorageError>;
+    async fn update_nomenclature(&self, entity_id: Uuid, nomenclature: &Nomenclature) -> Result<(), StorageError>;
+    async fn delete_nomenclature(&self, nomenclature_id: Uuid) -> Result<(), StorageError>;
 }
 
 pub trait KnowledgeRepo {

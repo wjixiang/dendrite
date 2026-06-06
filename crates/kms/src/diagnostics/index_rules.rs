@@ -1,6 +1,52 @@
+use std::collections::HashMap;
+
 use crate::storage::types::{Index, TargetType};
 
 use super::{CodeDescription, Diagnostic, Severity};
+
+// ── Helpers ──────────────────────────────────────────────────────
+
+fn extract_prefix(title: &str) -> &str {
+    title.split(" · ").next().unwrap_or(title)
+}
+
+fn analyze_knowledge_prefixes(children: &[Index]) -> Option<Vec<(&str, usize)>> {
+    // 只关注 Knowledge 类型的子节点
+    let knowledge_children: Vec<&Index> = children
+        .iter()
+        .filter(|c| c.target_type == TargetType::Knowledge)
+        .collect();
+
+    if knowledge_children.len() < 3 {
+        return None;
+    }
+
+    let mut prefix_counts: HashMap<&str, usize> = HashMap::new();
+    for child in &knowledge_children {
+        let title = child.title.as_deref().unwrap_or("");
+        let prefix = extract_prefix(title);
+        if prefix.is_empty() {
+            continue;
+        }
+        *prefix_counts.entry(prefix).or_insert(0) += 1;
+    }
+
+    if prefix_counts.len() < 2 {
+        return None;
+    }
+
+    let total_titled: usize = prefix_counts.values().sum();
+    let max_count = *prefix_counts.values().max().unwrap();
+    if max_count * 2 >= total_titled {
+        return None;
+    }
+
+    let mut sorted: Vec<(&str, usize)> = prefix_counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.truncate(5);
+
+    Some(sorted)
+}
 
 // ── Trait ────────────────────────────────────────────────────────
 
@@ -81,5 +127,50 @@ impl IndexDiagnosticRule for ExcessiveChildren {
 
     fn name(&self) -> &str {
         "index.excessive_children"
+    }
+}
+
+pub struct InconsistentPrefixes;
+
+impl IndexDiagnosticRule for InconsistentPrefixes {
+    fn check(
+        &self,
+        node: &Index,
+        _depth: usize,
+        location: &str,
+        children: &[Index],
+    ) -> Option<Diagnostic> {
+        let prefixes = analyze_knowledge_prefixes(children)?;
+
+        let prefix_list: Vec<String> = prefixes
+            .iter()
+            .map(|(prefix, count)| format!("「{}」({} 个)", prefix, count))
+            .collect();
+
+        let parent_title = node.title.as_deref().unwrap_or("(unnamed)");
+
+        Some(Diagnostic {
+            code: self.name().to_string(),
+            code_description: Some(CodeDescription {
+                href: "kms://diagnostics/index/inconsistent-prefixes".to_string(),
+            }),
+            location: location.to_string(),
+            severity: Severity::Hint,
+            message: format!(
+                "知识子节点标题前缀分布零散（{}），可能需要重组",
+                prefix_list.join("、")
+            ),
+            suggested_actions: vec![
+                "考虑将具有相同前缀的知识子节点归入新的分组节点下".to_string(),
+                format!(
+                    "例如：为「{}」下的子节点创建以各前缀命名的子分组",
+                    parent_title,
+                ),
+            ],
+        })
+    }
+
+    fn name(&self) -> &str {
+        "index.inconsistent_prefixes"
     }
 }

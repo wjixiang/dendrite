@@ -37,6 +37,9 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegis
         get_entity(svc.clone()),
         search_entity(svc.clone()),
         delete_entity(svc.clone()),
+        add_nomenclature(svc.clone()),
+        update_nomenclature(svc.clone()),
+        delete_nomenclature(svc.clone()),
         get_entity_knowledge(svc.clone()),
         create_knowledge(svc.clone()),
         get_knowledge(svc.clone()),
@@ -55,9 +58,9 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<crate::toolset::ToolRegis
 fn create_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_create_entity",
-        "Create a new entity in the knowledge graph. Entities represent things/concepts.",
+        "Create a new entity in the knowledge graph. Each (lang, full) combination must be unique — do NOT send duplicate names within the same call (e.g. two entries with the same lang and full). Duplicates will be silently removed.",
     )
-    .parameter("names", "array", "Array of nomenclatures: [{lang: 'ZH'|'EN', full: string, abbr?: string}]")
+    .parameter("names", "array", "Array of nomenclatures: [{lang: 'ZH'|'EN', full: string, abbr?: string}]. Each (lang, full) pair must be unique.")
     .parameter("definition", "string", "Brief definition of the entity")
     .required("names")
     .required("definition")
@@ -216,6 +219,7 @@ fn list_entities(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
                     .map(|e| {
                         let names: Vec<Value> = e.name.iter().map(|n| {
                             serde_json::json!({
+                                "id": n.id.to_string(),
                                 "lang": format!("{:?}", n.lang),
                                 "full": n.full,
                                 "abbr": n.abbr
@@ -262,6 +266,174 @@ fn delete_entity(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
                 Ok(ToolResult::success_json(
                     "delete_entity",
                     serde_json::json!({ "deleted": id_str }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn add_nomenclature(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_add_nomenclature",
+        "Add a new nomenclature (name variant) to an existing entity. Use this when an entity needs an additional name in another language, an abbreviation, or an alias.",
+    )
+    .parameter("entity_id", "string", "UUID of the entity")
+    .parameter("lang", "string", "Language of the nomenclature: 'ZH' or 'EN'")
+    .parameter("full", "string", "Full name")
+    .parameter("abbr", "string", "Abbreviation (optional)")
+    .required("entity_id")
+    .required("lang")
+    .required("full")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let id_str = input["entity_id"].as_str().ok_or("missing 'entity_id'")?;
+                let id = Uuid::parse_str(id_str).map_err(|_| "invalid 'entity_id' UUID")?;
+                let lang = input["lang"].as_str().ok_or("missing 'lang'")?;
+                let full = input["full"].as_str().ok_or("missing 'full'")?;
+                let abbr = input["abbr"].as_str().map(|s| s.to_string());
+                let lang = match lang {
+                    "EN" => kms::Language::EN,
+                    _ => kms::Language::ZH,
+                };
+                let entity = svc.add_nomenclature(id, lang, full.to_string(), abbr).await?;
+                let names_json: Vec<Value> = entity
+                    .name
+                    .iter()
+                    .map(|n| {
+                        serde_json::json!({
+                            "id": n.id.to_string(),
+                            "lang": format!("{:?}", n.lang),
+                            "full": n.full,
+                            "abbr": n.abbr
+                        })
+                    })
+                    .collect();
+                Ok(ToolResult::success_json(
+                    "add_nomenclature",
+                    serde_json::json!({
+                        "entity_id": id_str,
+                        "names": names_json
+                    }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn update_nomenclature(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_update_nomenclature",
+        "Update an existing nomenclature's lang, full name, or abbreviation.",
+    )
+    .parameter("entity_id", "string", "UUID of the entity")
+    .parameter("nomenclature_id", "string", "UUID of the nomenclature to update")
+    .parameter("lang", "string", "New language: 'ZH' or 'EN'")
+    .parameter("full", "string", "New full name")
+    .parameter("abbr", "string", "New abbreviation (optional, pass empty string to clear)")
+    .required("entity_id")
+    .required("nomenclature_id")
+    .required("lang")
+    .required("full")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let entity_id = Uuid::parse_str(
+                    input["entity_id"].as_str().ok_or("missing 'entity_id'")?,
+                )
+                .map_err(|_| "invalid 'entity_id' UUID")?;
+                let nom_id = Uuid::parse_str(
+                    input["nomenclature_id"].as_str().ok_or("missing 'nomenclature_id'")?,
+                )
+                .map_err(|_| "invalid 'nomenclature_id' UUID")?;
+                let lang = input["lang"].as_str().ok_or("missing 'lang'")?;
+                let full = input["full"].as_str().ok_or("missing 'full'")?;
+                let abbr = input["abbr"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
+                let lang = match lang {
+                    "EN" => kms::Language::EN,
+                    _ => kms::Language::ZH,
+                };
+                let entity =
+                    svc.update_nomenclature(entity_id, nom_id, lang, full.to_string(), abbr)
+                        .await?;
+                let names_json: Vec<Value> = entity
+                    .name
+                    .iter()
+                    .map(|n| {
+                        serde_json::json!({
+                            "id": n.id.to_string(),
+                            "lang": format!("{:?}", n.lang),
+                            "full": n.full,
+                            "abbr": n.abbr
+                        })
+                    })
+                    .collect();
+                Ok(ToolResult::success_json(
+                    "update_nomenclature",
+                    serde_json::json!({
+                        "entity_id": entity_id.to_string(),
+                        "names": names_json
+                    }),
+                ))
+            })
+        })),
+        vec![],
+    )
+}
+
+fn delete_nomenclature(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
+    let definition = ToolBuilder::new(
+        "kms_delete_nomenclature",
+        "Delete a nomenclature from an entity. The entity must retain at least one nomenclature.",
+    )
+    .parameter("entity_id", "string", "UUID of the entity")
+    .parameter("nomenclature_id", "string", "UUID of the nomenclature to delete")
+    .required("entity_id")
+    .required("nomenclature_id")
+    .build();
+
+    crate::toolset::ToolRegistration::new(
+        definition,
+        Box::new(crate::function::SimpleTool::new(move |input: Value| {
+            let svc = svc.clone();
+            Box::pin(async move {
+                let entity_id = Uuid::parse_str(
+                    input["entity_id"].as_str().ok_or("missing 'entity_id'")?,
+                )
+                .map_err(|_| "invalid 'entity_id' UUID")?;
+                let nom_id = Uuid::parse_str(
+                    input["nomenclature_id"].as_str().ok_or("missing 'nomenclature_id'")?,
+                )
+                .map_err(|_| "invalid 'nomenclature_id' UUID")?;
+                let entity = svc.delete_nomenclature(entity_id, nom_id).await?;
+                let names_json: Vec<Value> = entity
+                    .name
+                    .iter()
+                    .map(|n| {
+                        serde_json::json!({
+                            "id": n.id.to_string(),
+                            "lang": format!("{:?}", n.lang),
+                            "full": n.full,
+                            "abbr": n.abbr
+                        })
+                    })
+                    .collect();
+                Ok(ToolResult::success_json(
+                    "delete_nomenclature",
+                    serde_json::json!({
+                        "entity_id": entity_id.to_string(),
+                        "names": names_json
+                    }),
                 ))
             })
         })),
@@ -435,6 +607,28 @@ fn get_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration 
     )
 }
 
+/// Vague title suffixes that indicate the aspect is too generic.
+/// Must be kept in sync with `kms::diagnostics::knowledge_rules::VAGUE_TITLE_KEYWORDS`.
+const VAGUE_TITLE_SUFFIXES: &[&str] = &[
+    "概述", "总结", "小结", "定义", "简介", "说明", "介绍", "基本概念", "疾病特征",
+];
+
+fn validate_knowledge_title(title: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Extract the suffix after " · " separator
+    let suffix = title.split(" · ").nth(1).unwrap_or(title);
+    for &keyword in VAGUE_TITLE_SUFFIXES {
+        if suffix.contains(keyword) {
+            return Err(format!(
+                "标题 \"{title}\" 的切面描述包含模糊词汇 \"{keyword}\"。\
+                 切面描述必须是具体的方面（如 \"药物治疗\"、\"诊断标准\"、\"发病机制\"），\
+                 不能使用泛化术语。请选择一个更精确的切面名称后重试。"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn create_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_create_knowledge",
@@ -455,6 +649,7 @@ fn create_knowledge(svc: Arc<kms::KmsService>) -> crate::toolset::ToolRegistrati
             let svc = svc.clone();
             Box::pin(async move {
                 let title = input["title"].as_str().ok_or("missing 'title'")?;
+                validate_knowledge_title(title)?;
                 let knowledge_type = match input["knowledge_type"].as_str() {
                     Some("relation") => kms::KnowledgeType::Relation,
                     _ => kms::KnowledgeType::Aspect,

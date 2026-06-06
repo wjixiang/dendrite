@@ -320,7 +320,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             resize_panel(app, 1);
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown, .. } => {
+        KeyEvent { code: KeyCode::Char('j') | KeyCode::Down, .. } => {
             match app.focused {
                 Panel::Tree => {
                     if let Some(sel) = app.tree_state.selected() {
@@ -349,14 +349,25 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
                 }
                 Panel::Agent => {
                     app.agent_following = false;
-                    if app.agent_scroll < app.agent_lines.len() as u16 {
+                    if app.agent_scroll < app.agent_lines.len() {
                         app.agent_scroll += 1;
                     }
                     Action::None
                 }
             }
         }
-        KeyEvent { code: KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp, .. } => {
+        KeyEvent { code: KeyCode::PageDown, .. } => {
+            match app.focused {
+                Panel::Agent => {
+                    app.agent_following = false;
+                    let page = app.agent_visible_height.saturating_sub(1).max(1);
+                    app.agent_scroll = app.agent_scroll.saturating_add(page);
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
+        KeyEvent { code: KeyCode::Char('k') | KeyCode::Up, .. } => {
             match app.focused {
                 Panel::Tree => {
                     if let Some(sel) = app.tree_state.selected() {
@@ -379,6 +390,26 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
                     app.agent_scroll = app.agent_scroll.saturating_sub(1);
                     Action::None
                 }
+            }
+        }
+        KeyEvent { code: KeyCode::PageUp, .. } => {
+            match app.focused {
+                Panel::Agent => {
+                    app.agent_following = false;
+                    let page = app.agent_visible_height.saturating_sub(1).max(1);
+                    app.agent_scroll = app.agent_scroll.saturating_sub(page);
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
+        KeyEvent { code: KeyCode::End, .. } => {
+            match app.focused {
+                Panel::Agent => {
+                    app.agent_following = true;
+                    Action::None
+                }
+                _ => Action::None,
             }
         }
         _ => Action::None,
@@ -407,7 +438,11 @@ pub async fn run_app(
                         app.agent_requesting = false;
                         app.agent_lines.extend(event_to_lines(event));
                         if app.agent_following && app.agent_lines.len() > 1 {
-                            app.agent_scroll = (app.agent_lines.len() - 1) as u16;
+                            let visible = app.agent_visible_height.max(1);
+                            app.agent_scroll = app
+                                .agent_lines
+                                .len()
+                                .saturating_sub(visible);
                         }
                     }
                 }

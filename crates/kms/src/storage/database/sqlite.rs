@@ -340,6 +340,48 @@ impl EntityRepo for SqliteEntityRepo {
 
         Ok(())
     }
+
+    async fn add_nomenclature(&self, entity_id: Uuid, nom: &Nomenclature) -> Result<(), StorageError> {
+        sqlx::query::<Sqlite>(
+            "INSERT INTO nomenclatures (id, entity_id, lang, full, abbr) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(nom.id.to_string())
+        .bind(entity_id.to_string())
+        .bind(language_to_str(&nom.lang))
+        .bind(&nom.full)
+        .bind(&nom.abbr)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn update_nomenclature(&self, entity_id: Uuid, nom: &Nomenclature) -> Result<(), StorageError> {
+        let result = sqlx::query::<Sqlite>(
+            "UPDATE nomenclatures SET lang = ?, full = ?, abbr = ? WHERE id = ? AND entity_id = ?",
+        )
+        .bind(language_to_str(&nom.lang))
+        .bind(&nom.full)
+        .bind(&nom.abbr)
+        .bind(nom.id.to_string())
+        .bind(entity_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound(nom.id));
+        }
+        Ok(())
+    }
+
+    async fn delete_nomenclature(&self, nomenclature_id: Uuid) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM nomenclatures WHERE id = ?")
+            .bind(nomenclature_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound(nomenclature_id));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

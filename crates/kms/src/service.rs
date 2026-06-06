@@ -77,6 +77,39 @@ impl KmsService {
             }
         }
 
+        // Deduplicate input nomenclatures: keep only the first occurrence per (lang, full).
+        let mut seen: Vec<(Language, String)> = Vec::new();
+        let names: Vec<Nomenclature> = names
+            .into_iter()
+            .filter(|n| {
+                let dup = seen.iter().any(|(l, f)| *l == n.lang && f == &n.full);
+                if !dup {
+                    seen.push((n.lang.clone(), n.full.clone()));
+                }
+                !dup
+            })
+            .collect();
+
+        // Check each remaining nomenclature against existing DB records.
+        // If any (lang, full) already exists in another entity, skip it.
+        let mut db_safe_names = Vec::new();
+        for n in names {
+            let exists = self
+                .storage
+                .entity
+                .find_by_exact_name(&n.full)
+                .await
+                .map_err(|e| e.to_string())?;
+            if exists.is_none() {
+                db_safe_names.push(n);
+            }
+        }
+        let names = db_safe_names;
+
+        if names.is_empty() {
+            return Err("所有提供的命名已存在于数据库中，无法创建新实体".into());
+        }
+
         let entity = Entity {
             id: Uuid::new_v4(),
             name: names,
@@ -97,6 +130,87 @@ impl KmsService {
 
     pub async fn delete_entity(&self, id: Uuid) -> Result<(), String> {
         self.storage.entity.delete(id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn add_nomenclature(
+        &self,
+        entity_id: Uuid,
+        lang: Language,
+        full: String,
+        abbr: Option<String>,
+    ) -> Result<Entity, String> {
+        let entity = self.storage.entity.get(entity_id).await.map_err(|e| e.to_string())?;
+        if entity.name.iter().any(|n| n.lang == lang && n.full == full) {
+            return Err(format!("命名 ({:?}, {}) 已存在于该实体中", lang, full));
+        }
+        let nom = Nomenclature {
+            id: Uuid::new_v4(),
+            lang,
+            full: full.clone(),
+            abbr,
+        };
+        self.storage
+            .entity
+            .add_nomenclature(entity_id, &nom)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.storage.entity.get(entity_id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn update_nomenclature(
+        &self,
+        entity_id: Uuid,
+        nomenclature_id: Uuid,
+        lang: Language,
+        full: String,
+        abbr: Option<String>,
+    ) -> Result<Entity, String> {
+        let entity = self.storage.entity.get(entity_id).await.map_err(|e| e.to_string())?;
+        if !entity.name.iter().any(|n| n.id == nomenclature_id) {
+            return Err("该 nomenclature 不属于此实体".into());
+        }
+        if entity
+            .name
+            .iter()
+            .any(|n| n.id != nomenclature_id && n.lang == lang && n.full == full)
+        {
+            return Err(format!(
+                "命名 ({:?}, {}) 已存在于该实体的另一条记录中",
+                lang, full
+            ));
+        }
+        let nom = Nomenclature {
+            id: nomenclature_id,
+            lang,
+            full,
+            abbr,
+        };
+        self.storage
+            .entity
+            .update_nomenclature(entity_id, &nom)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.storage.entity.get(entity_id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn delete_nomenclature(
+        &self,
+        entity_id: Uuid,
+        nomenclature_id: Uuid,
+    ) -> Result<Entity, String> {
+        let entity = self.storage.entity.get(entity_id).await.map_err(|e| e.to_string())?;
+        if entity.name.len() <= 1 {
+            return Err("实体至少需要保留一条命名".into());
+        }
+        if !entity.name.iter().any(|n| n.id == nomenclature_id) {
+            return Err("该 nomenclature 不属于此实体".into());
+        }
+        self.storage
+            .entity
+            .delete_nomenclature(nomenclature_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.storage.entity.get(entity_id).await.map_err(|e| e.to_string())
     }
 
     pub async fn search_entity(&self, keyword: &str) -> Result<Vec<Entity>, String> {

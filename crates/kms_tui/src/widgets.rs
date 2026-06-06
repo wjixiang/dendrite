@@ -103,20 +103,28 @@ pub fn render_agent(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
-    let content = app.agent_lines.clone();
-    let content_lines = content.len() as u16;
-    let visible_height = chunks[0].height.saturating_sub(2);
+    let visible_height = chunks[0].height.saturating_sub(2) as usize;
+    let content_lines = app.agent_lines.len();
     let max_scroll = content_lines.saturating_sub(visible_height);
     let scroll = app.agent_scroll.min(max_scroll);
     app.agent_scroll = scroll;
+    app.agent_visible_height = visible_height;
+
+    // Slice only the visible window to avoid u16 overflow in Paragraph::scroll
+    let visible_content: Vec<_> = app
+        .agent_lines
+        .iter()
+        .skip(scroll)
+        .take(visible_height)
+        .cloned()
+        .collect();
 
     let conv_block = Block::default()
         .title(" Agent ")
         .borders(Borders::ALL)
         .border_style(focused_border(Panel::Agent, app.focused));
-    let conv = Paragraph::new(content)
+    let conv = Paragraph::new(visible_content)
         .block(conv_block)
-        .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
     f.render_widget(conv, chunks[0]);
 
