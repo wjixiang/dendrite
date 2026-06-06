@@ -73,7 +73,6 @@ pub struct App {
     pub providers: Vec<SettingsProvider>,
     pub current_provider: String,
     pub current_model: String,
-    pub top_col_widths: [u16; 3],
 }
 
 impl Default for App {
@@ -99,7 +98,12 @@ impl App {
             .unwrap_or(0);
         let settings_selected_model = providers
             .get(settings_selected_provider)
-            .map(|p| p.models.iter().position(|m| m == &current_model).unwrap_or(0))
+            .map(|p| {
+                p.models
+                    .iter()
+                    .position(|m| m == &current_model)
+                    .unwrap_or(0)
+            })
             .unwrap_or(0);
 
         Self {
@@ -133,7 +137,6 @@ impl App {
             providers,
             current_provider,
             current_model,
-            top_col_widths: [30, 40, 30],
         }
     }
 
@@ -178,7 +181,10 @@ impl App {
             self.entity_lines = vec![Line::from("(no entities)")];
             return;
         }
-        let mut lines = vec![Line::from(format!("Entities ({})", entity_ids.len())), Line::from("")];
+        let mut lines = vec![
+            Line::from(format!("Entities ({})", entity_ids.len())),
+            Line::from(""),
+        ];
         for id in entity_ids {
             match self.svc.get_entity(*id).await {
                 Ok(entity) => {
@@ -203,9 +209,10 @@ impl App {
     }
 
     pub async fn refresh_tree(&mut self) {
-        let prev_selected = self.tree_state.selected().and_then(|i| {
-            self.tree_nodes.get(i).map(|n| n.id)
-        });
+        let prev_selected = self
+            .tree_state
+            .selected()
+            .and_then(|i| self.tree_nodes.get(i).map(|n| n.id));
 
         self.tree_items.clear();
         self.tree_nodes.clear();
@@ -214,7 +221,8 @@ impl App {
             Ok(c) => c,
             Err(_) => return,
         };
-        let mut stack: Vec<(kms::Index, usize)> = root_children.into_iter().map(|c| (c, 0)).collect();
+        let mut stack: Vec<(kms::Index, usize)> =
+            root_children.into_iter().map(|c| (c, 0)).collect();
 
         while let Some((node, depth)) = stack.pop() {
             let title = node.title.as_deref().unwrap_or("(unnamed)");
@@ -223,7 +231,8 @@ impl App {
                 kms::TargetType::Group => "▸ ",
                 kms::TargetType::Knowledge => "● ",
             };
-            self.tree_items.push(ListItem::new(format!("{}{}{}", indent, icon, title)));
+            self.tree_items
+                .push(ListItem::new(format!("{}{}{}", indent, icon, title)));
             self.tree_nodes.push(node.clone());
 
             if let Ok(children) = self.svc.get_children(Some(node.id)).await {
@@ -262,7 +271,10 @@ impl App {
                         lines.push(crate::styles::style_diagnostic_line(&d.location));
                     }
                     for action in &d.suggested_actions {
-                        lines.push(crate::styles::style_diagnostic_line(&format!("  → {}", action)));
+                        lines.push(crate::styles::style_diagnostic_line(&format!(
+                            "  → {}",
+                            action
+                        )));
                     }
                     lines.push(Line::from(""));
                 }

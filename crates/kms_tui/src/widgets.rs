@@ -1,12 +1,12 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{self, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::layout::{BOTTOM_H_CONSTRAINTS, LAYOUT_CONSTRAINTS, top_h_constraints};
+use crate::layout::{AGENT_DIAG_CONSTRAINTS, COLUMN_CONSTRAINTS, LAYOUT_CONSTRAINTS};
 use crate::state::{App, KeTab, Panel, SettingsPane};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
@@ -164,25 +164,25 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .constraints(LAYOUT_CONSTRAINTS)
         .split(f.area());
 
-    let top_row = Layout::default()
+    let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(top_h_constraints(&app.top_col_widths))
+        .constraints(COLUMN_CONSTRAINTS)
         .split(vertical[0]);
 
-    let bottom_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(BOTTOM_H_CONSTRAINTS)
-        .split(vertical[1]);
+    let agent_diag = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(AGENT_DIAG_CONSTRAINTS)
+        .split(columns[2]);
 
     f.render_stateful_widget(
         render_tree(&app.tree_items, app.focused),
-        top_row[0],
+        columns[0],
         &mut app.tree_state,
     );
-    render_ke(f, app, top_row[1]);
-    render_agent(f, app, top_row[2]);
-    f.render_widget(render_diagnostics(app, bottom_row[0]), bottom_row[0]);
-    f.render_widget(crate::layout::render_help_bar(), vertical[2]);
+    render_ke(f, app, columns[1]);
+    render_agent(f, app, agent_diag[0]);
+    f.render_widget(render_diagnostics(app, agent_diag[1]), agent_diag[1]);
+    f.render_widget(crate::layout::render_help_bar(), vertical[1]);
 
     if app.settings_modal_open {
         render_settings_modal(f, app);

@@ -22,12 +22,7 @@ const PANEL_ORDER: [Panel; 4] = [
     Panel::Diagnostics,
 ];
 
-const TOP_PANEL_ORDER: [Panel; 3] = [Panel::Tree, Panel::KnowledgeEntity, Panel::Agent];
-
-const RESIZE_STEP: u16 = 2;
-const MIN_PANEL_PCT: u16 = 10;
-
-const MAX_VAL_LEN: usize = 60;
+const MAX_VAL_LEN: usize = usize::MAX;
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -74,7 +69,7 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
             ))];
             for l in text.lines().take(10) {
                 lines.push(Line::from(Span::styled(
-                    format!("   {}", truncate(l, 80)),
+                    format!("   {}", truncate(l, usize::MAX)),
                     Style::default().fg(Color::Magenta),
                 )));
             }
@@ -147,7 +142,7 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
                         for l in s.lines().take(6) {
                             lines.push(Line::from(vec![
                                 Span::styled("    ", Style::default()),
-                                Span::styled(truncate(l, 80), Style::default().fg(color)),
+                                Span::styled(truncate(l, usize::MAX), Style::default().fg(color)),
                             ]));
                         }
                     }
@@ -162,7 +157,7 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
                 for l in content.lines().take(6) {
                     lines.push(Line::from(vec![
                         Span::styled("    ", Style::default()),
-                        Span::styled(truncate(l, 80), Style::default().fg(color)),
+                        Span::styled(truncate(l, usize::MAX), Style::default().fg(color)),
                     ]));
                 }
             }
@@ -182,32 +177,6 @@ fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
         }
         AgentUiEvent::Requesting => vec![],
     }
-}
-
-fn resize_panel(app: &mut App, direction: isize) {
-    let idx = match TOP_PANEL_ORDER.iter().position(|&p| p == app.focused) {
-        Some(i) => i,
-        None => return,
-    };
-    let neighbor = if direction > 0 {
-        idx.saturating_sub(1)
-    } else {
-        (idx + 1).min(TOP_PANEL_ORDER.len() - 1)
-    };
-    if neighbor == idx {
-        return;
-    }
-    let step = RESIZE_STEP as isize;
-    let cur = app.top_col_widths[idx] as isize;
-    let nbr = app.top_col_widths[neighbor] as isize;
-    let min = MIN_PANEL_PCT as isize;
-    let new_cur = (cur + direction * step).clamp(min, cur + nbr - min);
-    let diff = new_cur - cur;
-    if diff == 0 {
-        return;
-    }
-    app.top_col_widths[idx] = new_cur as u16;
-    app.top_col_widths[neighbor] = (nbr - diff) as u16;
 }
 
 pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
@@ -284,13 +253,13 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             app.focused = PANEL_ORDER[prev];
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('h'), modifiers: KeyModifiers::SHIFT, .. } => {
+        KeyEvent { code: KeyCode::Char('H'), .. } => {
             let idx = PANEL_ORDER.iter().position(|&p| p == app.focused).unwrap_or(0);
             let prev = if idx == 0 { PANEL_ORDER.len() - 1 } else { idx - 1 };
             app.focused = PANEL_ORDER[prev];
             Action::None
         }
-        KeyEvent { code: KeyCode::Char('l'), modifiers: KeyModifiers::SHIFT, .. } => {
+        KeyEvent { code: KeyCode::Char('L'), .. } => {
             let idx = PANEL_ORDER.iter().position(|&p| p == app.focused).unwrap_or(0);
             let next = (idx + 1) % PANEL_ORDER.len();
             app.focused = PANEL_ORDER[next];
@@ -308,16 +277,6 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
                 crate::state::KeTab::Entity => crate::state::KeTab::Knowledge,
             };
             app.ke_scroll = 0;
-            Action::None
-        }
-        KeyEvent { code: KeyCode::Char('j'), modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. }
-        | KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. } => {
-            resize_panel(app, -1);
-            Action::None
-        }
-        KeyEvent { code: KeyCode::Char('k'), modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. }
-        | KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT, .. } => {
-            resize_panel(app, 1);
             Action::None
         }
         KeyEvent { code: KeyCode::Char('j') | KeyCode::Down, .. } => {
@@ -407,10 +366,31 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             match app.focused {
                 Panel::Agent => {
                     app.agent_following = true;
+                    let visible = app.agent_visible_height.max(1);
+                    app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
+                    Action::None
+                }
+                Panel::KnowledgeEntity => {
+                    let lines = match app.ke_tab {
+                        crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                        crate::state::KeTab::Entity => &app.entity_lines,
+                    };
+                    app.ke_scroll = (lines.len() as u16).saturating_sub(1);
+                    Action::None
+                }
+                Panel::Diagnostics => {
+                    app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
                     Action::None
                 }
                 _ => Action::None,
             }
+        }
+        KeyEvent { code: KeyCode::Char('G'), .. }
+            if app.focused == Panel::Agent && !app.agent_input_active => {
+            app.agent_following = true;
+            let visible = app.agent_visible_height.max(1);
+            app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
+            Action::None
         }
         _ => Action::None,
     }
