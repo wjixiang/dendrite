@@ -5,6 +5,38 @@ use crate::storage::{
     types::{Entity, Index, Knowledge, Nomenclature},
 };
 
+/// Raw ancestor path row, ordered from the requested node up to the root.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AncestorRow {
+    pub id: String,
+    pub title: Option<String>,
+    pub target: Option<String>,
+    pub target_type: Option<String>,
+    pub parent_id: Option<String>,
+    pub position: i64,
+    pub depth: i64,
+}
+
+/// Lightweight child row for projection into `IndexView`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ChildRow {
+    pub id: String,
+    pub title: Option<String>,
+    pub target_type: Option<String>,
+    pub position: i64,
+}
+
+/// Aggregate statistics about a subtree.
+#[derive(Debug, Clone, Default)]
+pub struct SubtreeStatsRow {
+    pub total_nodes: usize,
+    pub knowledge_count: usize,
+    pub group_count: usize,
+    pub max_depth: usize,
+    pub knowledge_titles: Vec<String>,
+    pub truncated: bool,
+}
+
 pub trait EntityRepo {
     async fn create(&self, entity: &Entity) -> Result<Uuid, StorageError>;
     async fn get(&self, id: Uuid) -> Result<Entity, StorageError>;
@@ -49,4 +81,27 @@ pub trait IndexRepo {
     async fn orphan_knowledge_titles(&self) -> Result<Vec<String>, StorageError>;
     async fn find_by_target(&self, target_id: Uuid) -> Result<Vec<Index>, StorageError>;
     async fn downgrade_to_group(&self, id: Uuid) -> Result<(), StorageError>;
+
+    // ---------- local-view (stateless) primitives ----------
+
+    /// Return the ancestor path of `node_id`, ordered from `node_id`
+    /// (depth 0) up to the root. Includes the node itself as the first
+    /// row.
+    async fn ancestor_path_rows(&self, node_id: Uuid) -> Result<Vec<AncestorRow>, StorageError>;
+
+    /// Return the direct children of `node_id` as lightweight rows
+    /// suitable for projection into `IndexView`. Ordered by `position`.
+    async fn child_rows(&self, node_id: Uuid) -> Result<Vec<ChildRow>, StorageError>;
+
+    /// Return aggregate statistics about the subtree rooted at `node_id`,
+    /// including a truncated list of knowledge titles.
+    async fn subtree_stats(
+        &self,
+        node_id: Uuid,
+        title_limit: usize,
+    ) -> Result<SubtreeStatsRow, StorageError>;
+
+    /// Count the direct siblings of `node_id` (i.e. the number of
+    /// children of its parent, including itself).
+    async fn sibling_count(&self, node_id: Uuid) -> Result<usize, StorageError>;
 }

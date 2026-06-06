@@ -26,9 +26,12 @@ mod kms_navigate;
 mod kms_rename_knowledge;
 mod kms_reorganize_children;
 mod kms_search_entity;
+mod kms_search_subtree;
+mod kms_subtree_knowledge;
 mod kms_update_entity;
 mod kms_update_knowledge;
 mod kms_update_nomenclature;
+mod kms_view_local;
 
 pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
     vec![
@@ -63,6 +66,9 @@ pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration
         kms_get_entity::registration(svc.clone()),
         kms_get_entity_knowledge::registration(svc.clone()),
         kms_get_knowledge::registration(svc.clone()),
-        kms_list_entities::registration(svc),
+        // Stateless local-view tools (preferred for read-only agents).
+        kms_view_local::registration(svc.clone()),
+        kms_subtree_knowledge::registration(svc.clone()),
+        kms_search_subtree::registration(svc),
     ]
 }

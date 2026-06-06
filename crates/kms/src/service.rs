@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::Storage;
 use crate::language::Language;
 use crate::storage::types::{Entity, Index, Knowledge, KnowledgeType, Nomenclature, TargetType};
+use crate::view::{IndexView, LocalView, SUBTREE_TITLES_LIMIT};
 
 use crate::Diagnostic;
 use crate::diagnostics;
@@ -1016,6 +1017,262 @@ impl KmsService {
             }
         }
     }
+
+    // -----------------------------------------------------------------
+    //  Local-view (stateless) API
+    //
+    //  These methods are intentionally side-effect free: they never
+    //  touch `self.inner.pointer` and can be invoked concurrently from
+    //  multiple read-only agents without interfering with one another
+    //  or with mutating agents that still use `navigate`.
+    // -----------------------------------------------------------------
+
+    /// Build a [`LocalView`] for the node identified by `node_id` without
+    /// mutating the global pointer.
+    pub async fn get_local_view(&self, node_id: Uuid) -> Result<LocalView, String> {
+        // 1) ancestor path
+        let path_rows = self
+            .storage
+            .index
+            .ancestor_path_rows(node_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Reconstruct full Index rows from the ancestor rows. The path
+        // rows include the requested node at depth 0.
+        let path: Vec<Index> = path_rows
+            .iter()
+            .map(|r| {
+                Ok::<Index, String>(Index {
+                    id: Uuid::parse_str(&r.id).map_err(|e| e.to_string())?,
+                    title: r.title.clone(),
+                    target: match &r.target {
+                        Some(t) => Some(Uuid::parse_str(t).map_err(|e| e.to_string())?),
+                        None => None,
+                    },
+                    target_type: match r.target_type.as_deref() {
+                        Some("knowledge") => TargetType::Knowledge,
+                        _ => TargetType::Group,
+                    },
+                    parent_id: match &r.parent_id {
+                        Some(p) => Some(Uuid::parse_str(p).map_err(|e| e.to_string())?),
+                        None => None,
+                    },
+                    position: r.position,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        // The first row in the path (depth 0) is the requested node.
+        let node = path
+            .first()
+            .cloned()
+            .ok_or_else(|| format!("node {} not found", node_id))?;
+
+        // 2) direct children
+        let child_rows = self
+            .storage
+            .index
+            .child_rows(node_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut children: Vec<IndexView> = Vec::with_capacity(child_rows.len());
+        for r in child_rows {
+            let id = Uuid::parse_str(&r.id).map_err(|e| e.to_string())?;
+            let title = r.title.unwrap_or_else(|| "(unnamed)".to_string());
+            let target_type = match r.target_type.as_deref() {
+                Some("knowledge") => TargetType::Knowledge,
+                _ => TargetType::Group,
+            };
+            children.push(IndexView {
+                id,
+                title,
+                target_type,
+                position: r.position,
+            });
+        }
+
+        // 3) subtree statistics
+        let stats = self
+            .storage
+            .index
+            .subtree_stats(node_id, SUBTREE_TITLES_LIMIT)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 4) sibling count (number of children of the node's parent,
+        //    including the node itself).
+        let sibling_count = self
+            .storage
+            .index
+            .sibling_count(node_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(LocalView {
+            node,
+            path,
+            children,
+            sibling_count,
+            subtree_summary: crate::view::SubtreeSummary {
+                total_nodes: stats.total_nodes,
+                knowledge_count: stats.knowledge_count,
+                group_count: stats.group_count,
+                max_depth: stats.max_depth,
+                knowledge_titles: stats.knowledge_titles,
+                truncated: stats.truncated,
+            },
+        })
+    }
+
+    /// Like [`get_local_view`](Self::get_local_view), but accepts a path
+    /// string compatible with [`navigate`](Self::navigate). The path is
+    /// resolved **without** mutating the global pointer; the original
+    /// `target` parameter is preserved for back-compat with the
+    /// stateful navigation API.
+    pub async fn get_local_view_by_path(&self, path: &str) -> Result<LocalView, String> {
+        let target_id = self.resolve_path_id(path).await?;
+        self.get_local_view(target_id).await
+    }
+
+    /// Return **all** knowledge entries inside the subtree rooted at
+    /// `node_id`. Use this when `LocalView::subtree_summary` is
+    /// truncated and the agent needs the full list.
+    pub async fn get_subtree_knowledge(&self, node_id: Uuid) -> Result<Vec<Knowledge>, String> {
+        let ids = self
+            .storage
+            .index
+            .subtree_knowledge_ids(node_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::with_capacity(ids.len());
+        for kid in ids {
+            match self.get_knowledge(kid).await {
+                Ok(k) => out.push(k),
+                Err(_) => continue, // tolerate dangling references
+            }
+        }
+        Ok(out)
+    }
+
+    /// Convenience wrapper: resolve a path string, then return the
+    /// subtree's knowledge entries.
+    pub async fn get_subtree_knowledge_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Vec<Knowledge>, String> {
+        let target_id = self.resolve_path_id(path).await?;
+        self.get_subtree_knowledge(target_id).await
+    }
+
+    /// Return knowledge entries inside the subtree rooted at `node_id`
+    /// whose title contains `keyword` (case-insensitive substring).
+    pub async fn search_knowledge_titles(
+        &self,
+        node_id: Uuid,
+        keyword: &str,
+    ) -> Result<Vec<Knowledge>, String> {
+        let all = self.get_subtree_knowledge(node_id).await?;
+        let kw = keyword.to_lowercase();
+        Ok(all
+            .into_iter()
+            .filter(|k| k.title.to_lowercase().contains(&kw))
+            .collect())
+    }
+
+    /// Internal helper: resolve a navigate-style path string to a node
+    /// id without mutating the global pointer. Mirrors the resolution
+    /// logic of [`navigate`](Self::navigate) but discards any stateful
+    /// effect.
+    async fn resolve_path_id(&self, path: &str) -> Result<Uuid, String> {
+        if path.is_empty() {
+            return Err("path is empty".into());
+        }
+
+        // Absolute path: start at the root.
+        if let Some(stripped) = path.strip_prefix('/') {
+            let root = self
+                .storage
+                .index
+                .find_root()
+                .await
+                .map_err(|e| e.to_string())?;
+            if stripped.is_empty() {
+                return Ok(root.id);
+            }
+            let mut id = root.id;
+            for seg in stripped.split('/') {
+                let seg = seg.trim();
+                if seg.is_empty() || seg == "." {
+                    continue;
+                }
+                id = self.descend(id, seg).await?;
+            }
+            return Ok(id);
+        }
+
+        // `..` alone: error out (need a current pointer context).
+        if path == ".." {
+            return Err("'..' requires a current pointer; use an absolute path or a sub-segment of an existing path".into());
+        }
+
+        // Relative path starting with `../`: walk up N levels from a
+        // notional current position. We resolve against the global
+        // pointer for compatibility with the stateful `navigate`.
+        if let Some(stripped) = path.strip_prefix("../") {
+            let mut id = self.get_pointer().await;
+            for _ in 0..path.matches("../").count() {
+                let node = self.get_index(id).await?;
+                id = node
+                    .parent_id
+                    .ok_or_else(|| "already at root, cannot go to parent".to_string())?;
+            }
+            for seg in stripped.split('/') {
+                let seg = seg.trim();
+                if seg.is_empty() {
+                    continue;
+                }
+                if seg == ".." {
+                    let node = self.get_index(id).await?;
+                    id = node
+                        .parent_id
+                        .ok_or_else(|| "already at root, cannot go to parent".to_string())?;
+                } else {
+                    id = self.descend(id, seg).await?;
+                }
+            }
+            return Ok(id);
+        }
+
+        // Multi-segment relative path: treat first segment as a child
+        // of the global pointer; subsequent segments descend.
+        if path.contains('/') {
+            let mut id = self.get_pointer().await;
+            for seg in path.split('/') {
+                let seg = seg.trim();
+                if seg.is_empty() {
+                    continue;
+                }
+                id = self.descend(id, seg).await?;
+            }
+            return Ok(id);
+        }
+
+        // Single segment: descend from the global pointer.
+        let id = self.get_pointer().await;
+        self.descend(id, path.trim()).await
+    }
+
+    /// Find a direct child of `parent_id` whose title equals `title`.
+    async fn descend(&self, parent_id: Uuid, title: &str) -> Result<Uuid, String> {
+        let children = self.get_children(Some(parent_id)).await?;
+        children
+            .iter()
+            .find(|c| c.title.as_deref() == Some(title))
+            .map(|c| c.id)
+            .ok_or_else(|| format!("segment '{}' not found as child of current node", title))
+    }
 }
 
 async fn ensure_root_index(storage: &Storage) -> Result<Uuid, String> {
@@ -1176,5 +1433,192 @@ mod tests {
 
         let got = svc.get_index(child.id).await.unwrap();
         assert_eq!(got.id, child.id);
+    }
+
+    // ---------- local-view tests ----------
+
+    /// Build a small tree:
+    ///
+    /// ```text
+    /// root
+    /// ├── 父节点
+    /// │   ├── 子节点A (knowledge)
+    /// │   └── 子节点B
+    /// └── 旁系
+    /// ```
+    async fn build_sample_tree(svc: &KmsService) -> SampleTree {
+        let (e, _) = svc
+            .create_entity(vec![make_name("测试实体")], "定义")
+            .await
+            .unwrap();
+        let k = svc
+            .create_knowledge("A · 病因", KnowledgeType::Aspect, vec![e.id], None)
+            .await
+            .unwrap();
+        let root = svc.create_index_root("Root").await.unwrap();
+        let parent = svc
+            .create_index(root.id, Some("父节点".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let a = svc
+            .create_index(
+                parent.id,
+                Some("子节点A".into()),
+                Some(k.id),
+                Some(TargetType::Knowledge),
+            )
+            .await
+            .unwrap();
+        let b = svc
+            .create_index(
+                parent.id,
+                Some("子节点B".into()),
+                None,
+                Some(TargetType::Group),
+            )
+            .await
+            .unwrap();
+        let sibling = svc
+            .create_index(root.id, Some("旁系".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        SampleTree {
+            _e: e,
+            _k: k,
+            root,
+            parent,
+            a,
+            b,
+            sibling,
+        }
+    }
+
+    struct SampleTree {
+        _e: Entity,
+        _k: Knowledge,
+        root: Index,
+        parent: Index,
+        a: Index,
+        b: Index,
+        sibling: Index,
+    }
+
+    #[tokio::test]
+    async fn test_get_local_view_returns_node_and_children() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let view = svc.get_local_view(tree.parent.id).await.unwrap();
+        assert_eq!(view.node.id, tree.parent.id);
+        assert_eq!(view.children.len(), 2);
+        let titles: Vec<&str> = view.children.iter().map(|c| c.title.as_str()).collect();
+        assert!(titles.contains(&"子节点A"));
+        assert!(titles.contains(&"子节点B"));
+        // path contains root + parent
+        assert_eq!(view.path.len(), 2);
+        assert_eq!(view.path[0].id, tree.parent.id);
+        assert_eq!(view.path[1].id, tree.root.id);
+    }
+
+    #[tokio::test]
+    async fn test_local_view_subtree_stats() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let view = svc.get_local_view(tree.root.id).await.unwrap();
+        // The root subtree contains: root, parent, A, B, sibling = 5 nodes
+        assert_eq!(view.subtree_summary.total_nodes, 5);
+        // Only A is a knowledge node
+        assert_eq!(view.subtree_summary.knowledge_count, 1);
+        assert_eq!(view.subtree_summary.group_count, 4);
+        // Depth from root: root(0) -> parent(1) -> A/B(2) = 2
+        assert_eq!(view.subtree_summary.max_depth, 2);
+        assert!(view
+            .subtree_summary
+            .knowledge_titles
+            .contains(&"A · 病因".to_string()));
+        assert!(!view.subtree_summary.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_local_view_does_not_mutate_pointer() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+        let initial = svc.get_pointer().await;
+
+        // Call the new stateless methods and confirm the pointer is
+        // unchanged.
+        let _ = svc.get_local_view(tree.a.id).await.unwrap();
+        let _ = svc.get_local_view(tree.b.id).await.unwrap();
+        let _ = svc
+            .get_local_view_by_path("/父节点/子节点A")
+            .await
+            .unwrap();
+        let _ = svc.get_subtree_knowledge(tree.root.id).await.unwrap();
+        let _ = svc
+            .search_knowledge_titles(tree.root.id, "病因")
+            .await
+            .unwrap();
+
+        let after = svc.get_pointer().await;
+        assert_eq!(initial, after, "stateless methods must not move the pointer");
+    }
+
+    #[tokio::test]
+    async fn test_get_local_view_by_path() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let v1 = svc.get_local_view_by_path("/父节点").await.unwrap();
+        assert_eq!(v1.node.id, tree.parent.id);
+
+        let v2 = svc.get_local_view_by_path("/父节点/子节点A").await.unwrap();
+        assert_eq!(v2.node.id, tree.a.id);
+        assert_eq!(v2.children.len(), 0);
+
+        // Relative (single segment) uses the global pointer.
+        let _ = svc.set_pointer_for_test(tree.root.id).await;
+        let v3 = svc.get_local_view_by_path("父节点").await.unwrap();
+        assert_eq!(v3.node.id, tree.parent.id);
+    }
+
+    #[tokio::test]
+    async fn test_get_subtree_knowledge() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let subtree = svc.get_subtree_knowledge(tree.root.id).await.unwrap();
+        assert_eq!(subtree.len(), 1);
+        assert_eq!(subtree[0].title, "A · 病因");
+
+        let subtree_a = svc.get_subtree_knowledge(tree.a.id).await.unwrap();
+        assert_eq!(subtree_a.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_knowledge_titles() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let hits = svc
+            .search_knowledge_titles(tree.root.id, "病因")
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "A · 病因");
+
+        let empty = svc
+            .search_knowledge_titles(tree.root.id, "nonexistent")
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
+    }
+}
+
+impl KmsService {
+    /// Test-only helper: set the global pointer to a known id.
+    #[cfg(test)]
+    pub(crate) async fn set_pointer_for_test(&self, id: Uuid) {
+        *self.inner.pointer.write().await = id;
     }
 }

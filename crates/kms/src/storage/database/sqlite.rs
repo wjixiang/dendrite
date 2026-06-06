@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::language::Language;
 use crate::storage::{
     error::StorageError,
-    repo::{EntityRepo, IndexRepo, KnowledgeRepo},
+    repo::{AncestorRow, ChildRow, EntityRepo, IndexRepo, KnowledgeRepo, SubtreeStatsRow},
     types::{Entity, Index, Knowledge, KnowledgeType, Nomenclature, TargetType},
 };
 
@@ -824,6 +824,128 @@ impl IndexRepo for SqliteIndexRepo {
         }
 
         Ok(())
+    }
+
+    // ---------- local-view (stateless) primitives ----------
+
+    async fn ancestor_path_rows(&self, node_id: Uuid) -> Result<Vec<AncestorRow>, StorageError> {
+        // Walk from `node_id` upward to the root. Using a recursive CTE
+        // that joins on `parent_id` traverses the chain in a single
+        // round-trip. The `depth` counter orders rows from the requested
+        // node (depth 0) up to the root.
+        let rows = sqlx::query_as::<Sqlite, AncestorRow>(
+            "WITH RECURSIVE ancestors AS (
+                SELECT id, title, target, target_type, parent_id, position, 0 AS depth
+                FROM indexes WHERE id = ?
+                UNION ALL
+                SELECT i.id, i.title, i.target, i.target_type, i.parent_id, i.position, a.depth + 1
+                FROM indexes i JOIN ancestors a ON i.id = a.parent_id
+            )
+            SELECT id, title, target, target_type, parent_id, position, depth
+            FROM ancestors ORDER BY depth ASC",
+        )
+        .bind(node_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    async fn child_rows(&self, node_id: Uuid) -> Result<Vec<ChildRow>, StorageError> {
+        let rows = sqlx::query_as::<Sqlite, ChildRow>(
+            "SELECT id, title, target_type, position
+             FROM indexes WHERE parent_id = ? ORDER BY position",
+        )
+        .bind(node_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    async fn subtree_stats(
+        &self,
+        node_id: Uuid,
+        title_limit: usize,
+    ) -> Result<SubtreeStatsRow, StorageError> {
+        // One recursive CTE for node counts + max depth; a second for
+        // truncated knowledge titles. Splitting into two CTEs avoids
+        // materialising full subtree node rows in the title query.
+        //
+        // Note: SQLite's SUM/MAX return NULL when there are no input
+        // rows, so the aggregates decode as `Option<i64>` and are
+        // unwrapped with a default of 0.
+        let stats = sqlx::query_as::<Sqlite, (i64, Option<i64>, Option<i64>, Option<i64>)>(
+            "WITH RECURSIVE subtree AS (
+                SELECT id, 0 AS depth FROM indexes WHERE id = ?
+                UNION ALL
+                SELECT i.id, s.depth + 1 FROM indexes i JOIN subtree s ON i.parent_id = s.id
+            )
+            SELECT
+                COUNT(*) AS total_nodes,
+                SUM(CASE WHEN i.target_type = 'knowledge' THEN 1 ELSE 0 END) AS knowledge_count,
+                SUM(CASE WHEN i.target_type = 'group' THEN 1 ELSE 0 END) AS group_count,
+                MAX(s.depth) AS max_depth
+            FROM subtree s JOIN indexes i ON s.id = i.id",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+
+        let (total_nodes, knowledge_count, group_count, max_depth) = stats;
+
+        // Fetch a truncated list of knowledge titles, oldest-first, to
+        // give the agent a stable preview of the subtree contents.
+        let title_rows: Vec<(String,)> = sqlx::query_as(
+            "WITH RECURSIVE subtree AS (
+                SELECT id FROM indexes WHERE id = ?
+                UNION ALL
+                SELECT i.id FROM indexes i JOIN subtree s ON i.parent_id = s.id
+            )
+            SELECT k.title
+            FROM subtree s
+            JOIN indexes i ON i.id = s.id
+            JOIN knowledges k ON k.id = i.target
+            WHERE i.target_type = 'knowledge' AND i.target IS NOT NULL
+            ORDER BY k.title ASC
+            LIMIT ?",
+        )
+        .bind(node_id.to_string())
+        .bind((title_limit as i64) + 1)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let truncated = title_rows.len() > title_limit;
+        let knowledge_titles: Vec<String> = title_rows
+            .into_iter()
+            .take(title_limit)
+            .map(|(t,)| t)
+            .collect();
+
+        Ok(SubtreeStatsRow {
+            total_nodes: total_nodes.max(0) as usize,
+            knowledge_count: knowledge_count.unwrap_or(0).max(0) as usize,
+            group_count: group_count.unwrap_or(0).max(0) as usize,
+            max_depth: max_depth.unwrap_or(0).max(0) as usize,
+            knowledge_titles,
+            truncated,
+        })
+    }
+
+    async fn sibling_count(&self, node_id: Uuid) -> Result<usize, StorageError> {
+        // Single statement: count children of `node_id`'s parent. If the
+        // node has no parent (it is the root), count top-level rows.
+        let count_row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM indexes
+             WHERE (parent_id IS NULL AND (SELECT parent_id FROM indexes WHERE id = ?) IS NULL)
+                OR parent_id = (SELECT parent_id FROM indexes WHERE id = ?)",
+        )
+        .bind(node_id.to_string())
+        .bind(node_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count_row.0.max(0) as usize)
     }
 }
 
