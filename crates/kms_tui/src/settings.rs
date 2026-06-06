@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 
 pub const SETTINGS_FILE: &str = "data/settings.json";
 
@@ -9,6 +8,7 @@ pub struct Settings {
     pub model: String,
 }
 
+#[allow(dead_code)]
 pub fn load_settings() -> Settings {
     match fs::read_to_string(SETTINGS_FILE) {
         Ok(data) => serde_json::from_str(&data).unwrap_or_default(),

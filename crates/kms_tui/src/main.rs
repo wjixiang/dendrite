@@ -1,8 +1,11 @@
+mod chat;
+mod components;
 mod input;
 mod layout;
 mod settings;
 mod state;
 mod styles;
+mod theme;
 mod tree;
 mod widgets;
 
@@ -15,16 +18,19 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     event::{DisableBracketedPaste, EnableBracketedPaste},
 };
-use agent_kms::KmsContext;
+use agent_compose::KmsContext;
+use agent_knowledge::KnowledgeContext;
 use kms::KmsService;
 use agentik_sdk::model::model_pool::ModelPool;
 use agentik_sdk::provider::LlmProvider;
 use agentik_sdk::provider::mimo::MimoProvider;
-use ratatui::{Terminal, style::Style};
+use ratatui::Terminal;
 
 use crate::input::run_app;
-use crate::state::{App, SettingsProvider};
-use crate::styles::style_diagnostic_line;
+use crate::state::{AgentKind, App, SettingsProvider};
+use crate::theme::Theme;
+
+use std::collections::HashMap;
 
 type CrosstermBackend = ratatui::backend::CrosstermBackend<std::io::Stdout>;
 
@@ -153,13 +159,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = build_pool(&current_provider, &current_model)
         .expect("Failed to build model pool for selected provider/model");
+    let pool_arc = Arc::new(pool);
 
-    let agent = agentik_core::Agent::builder()
-        .with_model_pool(Arc::new(pool))
+    let kms_agent = agentik_core::Agent::builder()
+        .with_model_pool(pool_arc.clone())
         .with_context(Arc::new(KmsContext::new(Arc::new(svc.clone()))))
         .build()
         .await
         .map_err(|e| e.to_string())?;
+
+    let knowledge_agent = agentik_core::Agent::builder()
+        .with_model_pool(pool_arc.clone())
+        .with_context(Arc::new(KnowledgeContext::new(Arc::new(svc.clone()))))
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>> =
+        HashMap::new();
+    agents.insert(AgentKind::Kms, Arc::new(tokio::sync::Mutex::new(kms_agent)));
+    agents.insert(
+        AgentKind::Knowledge,
+        Arc::new(tokio::sync::Mutex::new(knowledge_agent)),
+    );
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
@@ -168,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = App::new(
         svc,
-        Arc::new(tokio::sync::Mutex::new(agent)),
+        agents,
         providers,
         current_provider.clone(),
         current_model.clone(),
@@ -212,10 +234,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }]
     });
 
+    let theme = Theme::default_theme();
     if diagnostics.is_empty() {
         app.diagnostic_lines = vec![ratatui::text::Line::from(ratatui::text::Span::styled(
             "No issues found.".to_owned(),
-            Style::default().fg(ratatui::style::Color::Green),
+            theme.success_style(),
         ))];
     } else {
         let mut lines = vec![ratatui::text::Line::from(format!(
@@ -223,15 +246,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             diagnostics.len()
         ))];
         for d in &diagnostics {
-            lines.push(style_diagnostic_line(&format!(
-                "[{}] {} — {}",
-                d.severity.label(),
-                d.code,
-                d.message
-            )));
-            lines.push(style_diagnostic_line(&d.location));
+            lines.push(crate::styles::style_diagnostic_line(
+                &format!("[{}] {} — {}", d.severity.label(), d.code, d.message),
+                &theme,
+            ));
+            lines.push(crate::styles::style_diagnostic_line(&d.location, &theme));
             for action in &d.suggested_actions {
-                lines.push(style_diagnostic_line(&format!("  → {}", action)));
+                lines.push(crate::styles::style_diagnostic_line(
+                    &format!("  → {}", action),
+                    &theme,
+                ));
             }
             lines.push(ratatui::text::Line::from(""));
         }

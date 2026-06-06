@@ -1,72 +1,34 @@
 use ratatui::{
-    style::{Color, Modifier, Style},
-    text::Line,
+    style::Style,
+    text::{Line, Span},
 };
 
-/// Severity-based color and modifier theme.
-#[derive(Debug, Clone, Copy)]
-pub struct Theme {
-    pub fg: Color,
-    pub modifier: Modifier,
-}
+use crate::theme::Theme;
 
-impl Theme {
-    pub const fn error() -> Self {
-        Self {
-            fg: Color::Red,
-            modifier: Modifier::BOLD,
-        }
-    }
-
-    pub const fn warn() -> Self {
-        Self {
-            fg: Color::Yellow,
-            modifier: Modifier::empty(),
-        }
-    }
-
-    pub const fn info() -> Self {
-        Self {
-            fg: Color::Cyan,
-            modifier: Modifier::empty(),
-        }
-    }
-
-    pub const fn hint() -> Self {
-        Self {
-            fg: Color::DarkGray,
-            modifier: Modifier::empty(),
-        }
-    }
-
-    pub const fn indent() -> Self {
-        Self {
-            fg: Color::DarkGray,
-            modifier: Modifier::empty(),
-        }
-    }
-}
-
-/// Style a diagnostic line based on its prefix tags.
-pub fn style_diagnostic_line(line: &str) -> Line<'static> {
+pub fn style_diagnostic_line(line: &str, theme: &Theme) -> Line<'static> {
     if line.starts_with("[ERROR]") {
-        let t = Theme::error();
-        Line::from(Span::styled(line.to_owned(), Style::default().fg(t.fg).add_modifier(t.modifier)))
+        Line::from(Span::styled(
+            line.to_owned(),
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ))
     } else if line.starts_with("[WARN]") {
-        let t = Theme::warn();
-        Line::from(Span::styled(line.to_owned(), Style::default().fg(t.fg)))
+        Line::from(Span::styled(
+            line.to_owned(),
+            Style::default().fg(theme.warning),
+        ))
     } else if line.starts_with("[INFO]") {
-        let t = Theme::info();
-        Line::from(Span::styled(line.to_owned(), Style::default().fg(t.fg)))
-    } else if line.starts_with("[HINT]") {
-        let t = Theme::hint();
-        Line::from(Span::styled(line.to_owned(), Style::default().fg(t.fg)))
-    } else if line.starts_with("  →") {
-        let t = Theme::indent();
-        Line::from(Span::styled(line.to_owned(), Style::default().fg(t.fg)))
+        Line::from(Span::styled(
+            line.to_owned(),
+            Style::default().fg(theme.info),
+        ))
+    } else if line.starts_with("[HINT]") || line.starts_with("  \u{2192}") {
+        Line::from(Span::styled(
+            line.to_owned(),
+            Style::default().fg(theme.text_muted),
+        ))
     } else {
         Line::from(line.to_owned())
     }
 }
-
-use ratatui::text::Span;

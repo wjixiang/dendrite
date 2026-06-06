@@ -1,6 +1,7 @@
 use kms::{Index, TargetType};
 
 /// 以扁平列表形式结构存储树状索引，作为索引存储与TUI渲染的桥梁
+#[allow(dead_code)]
 pub struct TreeNode {
     pub id: String,
     pub title: String,
@@ -11,6 +12,7 @@ pub struct TreeNode {
     pub expanded: bool,
 }
 
+#[allow(dead_code)]
 impl TreeNode {
     pub fn from_index(value: Index, position: usize, indent: usize) -> Self {
         Self {

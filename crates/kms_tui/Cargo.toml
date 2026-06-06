@@ -9,7 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 agentik-core = { workspace = true }
-agent-kms = { path = "../agent-kms" }
+agent-compose = { path = "../agent-compose" }
+agent-knowledge = { path = "../agent-knowledge" }
 agentik-sdk = { workspace = true }
 agentik-types = { workspace = true, features = ["http"] }
 kms = { path = "../kms" }

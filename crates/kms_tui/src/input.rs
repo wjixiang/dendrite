@@ -1,212 +1,33 @@
+use std::sync::Arc;
 use std::time::Duration;
 
-use agent_kms::KmsContext;
+use agent_compose::KmsContext;
+use agent_knowledge::KnowledgeContext;
 use agentik_types::AgentUiEvent;
 use agentik_types::messages::ContentBlock;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use serde_json::Value;
-use std::sync::Arc;
-
-use crate::CrosstermBackend;
-use crate::settings::save_settings;
-use crate::state::{Action, App, Panel, SettingsPane};
-use crate::widgets::ui;
-use agentik_sdk::provider::LlmProvider;
 use ratatui::Terminal;
 
-const PANEL_ORDER: [Panel; 4] = [
-    Panel::Tree,
-    Panel::KnowledgeEntity,
-    Panel::Agent,
-    Panel::Diagnostics,
-];
+use crate::CrosstermBackend;
+use crate::chat::ChatMessage;
+use crate::layout::LayoutMode;
+use crate::settings::save_settings;
+use crate::state::{Action, AgentKind, App, Panel, SettingsPane};
+use crate::widgets::ui;
 
-const MAX_VAL_LEN: usize = usize::MAX;
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let end = s
-        .char_indices()
-        .take_while(|(i, _)| *i < max)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(max);
-    format!("{}…", &s[..end])
-}
-
-fn format_value(v: &Value) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => truncate(s, MAX_VAL_LEN),
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                "[]".to_string()
-            } else if arr.len() == 1 {
-                format!("[{}]", format_value(&arr[0]))
-            } else {
-                format!("[{} items]", arr.len())
-            }
-        }
-        Value::Object(_) => "{…}".to_string(),
-    }
-}
-
-fn event_to_lines(event: AgentUiEvent) -> Vec<Line<'static>> {
+fn agent_event_to_message(event: AgentUiEvent) -> Option<ChatMessage> {
     match event {
-        AgentUiEvent::LlmResponse(text) => text
-            .lines()
-            .map(|l| {
-                Line::from(Span::styled(
-                    l.to_string(),
-                    Style::default().fg(Color::White),
-                ))
-            })
-            .collect(),
-        AgentUiEvent::Thinking(text) => {
-            let mut lines = vec![Line::from(Span::styled(
-                "💭 Thinking:",
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ))];
-            for l in text.lines().take(10) {
-                lines.push(Line::from(Span::styled(
-                    format!("   {}", truncate(l, usize::MAX)),
-                    Style::default().fg(Color::Magenta),
-                )));
-            }
-            if text.lines().count() > 10 {
-                lines.push(Line::from(Span::styled(
-                    format!("   … {} more lines", text.lines().count() - 10),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            lines
-        }
-        AgentUiEvent::ToolCall { name, input } => {
-            let mut lines = vec![Line::from(vec![
-                Span::styled("🔧 ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    name.clone(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])];
-            if let Some(obj) = input.as_object() {
-                for (key, val) in obj {
-                    lines.push(Line::from(vec![
-                        Span::styled("    ", Style::default()),
-                        Span::styled(format!("{}: ", key), Style::default().fg(Color::Gray)),
-                        Span::styled(format_value(val), Style::default().fg(Color::White)),
-                    ]));
-                }
-            } else if !input.is_null() {
-                lines.push(Line::from(vec![
-                    Span::styled("    ", Style::default()),
-                    Span::styled(
-                        truncate(&input.to_string(), MAX_VAL_LEN),
-                        Style::default().fg(Color::White),
-                    ),
-                ]));
-            }
-            lines
-        }
-        AgentUiEvent::ToolResult { ok, content } => {
-            let (icon, color) = if ok {
-                ("✓", Color::Green)
-            } else {
-                ("✗", Color::Red)
-            };
-            let mut lines = vec![Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(icon, Style::default().fg(color)),
-            ])];
-            if let Ok(val) = serde_json::from_str::<Value>(&content) {
-                match &val {
-                    Value::Object(map) => {
-                        for (k, v) in map {
-                            lines.push(Line::from(vec![
-                                Span::styled("    ", Style::default()),
-                                Span::styled(
-                                    format!("{}: ", k),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                                Span::styled(format_value(v), Style::default().fg(color)),
-                            ]));
-                        }
-                    }
-                    Value::Array(arr) => {
-                        for item in arr.iter().take(8) {
-                            let label = if let Some(s) = item.as_str() {
-                                truncate(s, MAX_VAL_LEN)
-                            } else {
-                                format_value(item)
-                            };
-                            lines.push(Line::from(vec![
-                                Span::styled("    ", Style::default()),
-                                Span::styled(format!("  • {}", label), Style::default().fg(color)),
-                            ]));
-                        }
-                        if arr.len() > 8 {
-                            lines.push(Line::from(Span::styled(
-                                format!("    … and {} more", arr.len() - 8),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    }
-                    Value::String(s) => {
-                        for l in s.lines().take(6) {
-                            lines.push(Line::from(vec![
-                                Span::styled("    ", Style::default()),
-                                Span::styled(truncate(l, usize::MAX), Style::default().fg(color)),
-                            ]));
-                        }
-                    }
-                    other => {
-                        lines.push(Line::from(vec![
-                            Span::styled("    ", Style::default()),
-                            Span::styled(
-                                truncate(&other.to_string(), MAX_VAL_LEN),
-                                Style::default().fg(color),
-                            ),
-                        ]));
-                    }
-                }
-            } else {
-                for l in content.lines().take(6) {
-                    lines.push(Line::from(vec![
-                        Span::styled("    ", Style::default()),
-                        Span::styled(truncate(l, usize::MAX), Style::default().fg(color)),
-                    ]));
-                }
-            }
-            lines
-        }
-        AgentUiEvent::Done => {
-            vec![Line::from(Span::styled(
-                "✅ Agent completed",
-                Style::default().fg(Color::Green),
-            ))]
-        }
-        AgentUiEvent::Error(msg) => {
-            vec![Line::from(Span::styled(
-                format!("❌ {}", msg),
-                Style::default().fg(Color::Red),
-            ))]
-        }
-        AgentUiEvent::Requesting => vec![],
+        AgentUiEvent::LlmResponse(text) => Some(ChatMessage::Assistant { text }),
+        AgentUiEvent::Thinking(text) => Some(ChatMessage::Thinking { text }),
+        AgentUiEvent::ToolCall { name, input } => Some(ChatMessage::ToolCall { name, input }),
+        AgentUiEvent::ToolResult { ok, content } => Some(ChatMessage::ToolResult { ok, content }),
+        AgentUiEvent::Done => Some(ChatMessage::Done),
+        AgentUiEvent::Error(msg) => Some(ChatMessage::Error { message: msg }),
+        AgentUiEvent::Requesting => None,
     }
 }
 
 pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
-    // --- Agent input mode ---
     if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
         return match key {
             KeyEvent {
@@ -248,7 +69,6 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         };
     }
 
-    // --- Settings modal ---
     if app.settings_modal_open {
         return match key {
             KeyEvent {
@@ -283,7 +103,6 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         };
     }
 
-    // --- Normal mode ---
     match key {
         KeyEvent {
             code: KeyCode::Char('q'),
@@ -296,58 +115,53 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             ..
         } => Action::OpenSettings,
         KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } if app.focused == Panel::Agent && !app.agent_input_active && !app.agent_running => {
+            Action::SwitchAgent
+        }
+        KeyEvent {
             code: KeyCode::Tab, ..
         } => {
-            let idx = PANEL_ORDER
-                .iter()
-                .position(|&p| p == app.focused)
-                .unwrap_or(0);
-            let next = (idx + 1) % PANEL_ORDER.len();
-            app.focused = PANEL_ORDER[next];
+            let mode = LayoutMode::from_width(0);
+            let order = mode.panel_order();
+            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
+            let next = (idx + 1) % order.len();
+            app.focused = order[next];
             Action::None
         }
         KeyEvent {
             code: KeyCode::BackTab,
             ..
         } => {
-            let idx = PANEL_ORDER
-                .iter()
-                .position(|&p| p == app.focused)
-                .unwrap_or(0);
-            let prev = if idx == 0 {
-                PANEL_ORDER.len() - 1
-            } else {
-                idx - 1
-            };
-            app.focused = PANEL_ORDER[prev];
+            let mode = LayoutMode::from_width(0);
+            let order = mode.panel_order();
+            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
+            let prev = if idx == 0 { order.len() - 1 } else { idx - 1 };
+            app.focused = order[prev];
             Action::None
         }
         KeyEvent {
             code: KeyCode::Char('H'),
             ..
         } => {
-            let idx = PANEL_ORDER
-                .iter()
-                .position(|&p| p == app.focused)
-                .unwrap_or(0);
-            let prev = if idx == 0 {
-                PANEL_ORDER.len() - 1
-            } else {
-                idx - 1
-            };
-            app.focused = PANEL_ORDER[prev];
+            let mode = LayoutMode::from_width(0);
+            let order = mode.panel_order();
+            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
+            let prev = if idx == 0 { order.len() - 1 } else { idx - 1 };
+            app.focused = order[prev];
             Action::None
         }
         KeyEvent {
             code: KeyCode::Char('L'),
             ..
         } => {
-            let idx = PANEL_ORDER
-                .iter()
-                .position(|&p| p == app.focused)
-                .unwrap_or(0);
-            let next = (idx + 1) % PANEL_ORDER.len();
-            app.focused = PANEL_ORDER[next];
+            let mode = LayoutMode::from_width(0);
+            let order = mode.panel_order();
+            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
+            let next = (idx + 1) % order.len();
+            app.focused = order[next];
             Action::None
         }
         KeyEvent {
@@ -373,129 +187,150 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         KeyEvent {
             code: KeyCode::Char('j') | KeyCode::Down,
             ..
-        } => match app.focused {
-            Panel::Tree => {
-                if let Some(sel) = app.tree_state.selected() {
-                    let next = sel
-                        .saturating_add(1)
-                        .min(app.tree_items.len().saturating_sub(1));
-                    app.tree_state.select(Some(next));
-                    Action::TreeChanged
-                } else {
-                    Action::None
-                }
-            }
-            Panel::KnowledgeEntity => {
-                let lines = match app.ke_tab {
-                    crate::state::KeTab::Knowledge => &app.knowledge_lines,
-                    crate::state::KeTab::Entity => &app.entity_lines,
-                };
-                if app.ke_scroll < lines.len() as u16 {
-                    app.ke_scroll += 1;
-                }
-                Action::None
-            }
-            Panel::Diagnostics => {
-                if app.scroll_diag < app.diagnostic_lines.len() as u16 {
-                    app.scroll_diag += 1;
-                }
-                Action::None
-            }
-            Panel::Agent => {
-                app.agent_following = false;
-                if app.agent_scroll < app.agent_lines.len() {
-                    app.agent_scroll += 1;
-                }
-                Action::None
-            }
-        },
-        KeyEvent {
-            code: KeyCode::PageDown,
-            ..
-        } => match app.focused {
-            Panel::Agent => {
-                app.agent_following = false;
-                let page = app.agent_visible_height.saturating_sub(1).max(1);
-                app.agent_scroll = app.agent_scroll.saturating_add(page);
-                Action::None
-            }
-            _ => Action::None,
-        },
+        } => handle_scroll_down(app),
         KeyEvent {
             code: KeyCode::Char('k') | KeyCode::Up,
             ..
-        } => match app.focused {
-            Panel::Tree => {
-                if let Some(sel) = app.tree_state.selected() {
-                    app.tree_state.select(Some(sel.saturating_sub(1)));
-                    Action::TreeChanged
-                } else {
-                    Action::None
-                }
-            }
-            Panel::KnowledgeEntity => {
-                app.ke_scroll = app.ke_scroll.saturating_sub(1);
-                Action::None
-            }
-            Panel::Diagnostics => {
-                app.scroll_diag = app.scroll_diag.saturating_sub(1);
-                Action::None
-            }
-            Panel::Agent => {
-                app.agent_following = false;
-                app.agent_scroll = app.agent_scroll.saturating_sub(1);
-                Action::None
-            }
-        },
+        } => handle_scroll_up(app),
+        KeyEvent {
+            code: KeyCode::PageDown,
+            ..
+        } => handle_page_down(app),
         KeyEvent {
             code: KeyCode::PageUp,
             ..
-        } => match app.focused {
-            Panel::Agent => {
-                app.agent_following = false;
-                let page = app.agent_visible_height.saturating_sub(1).max(1);
-                app.agent_scroll = app.agent_scroll.saturating_sub(page);
-                Action::None
-            }
-            _ => Action::None,
-        },
+        } => handle_page_up(app),
         KeyEvent {
             code: KeyCode::End, ..
-        } => match app.focused {
-            Panel::Agent => {
-                app.agent_following = true;
-                let visible = app.agent_visible_height.max(1);
-                app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
-                Action::None
-            }
-            Panel::KnowledgeEntity => {
-                let lines = match app.ke_tab {
-                    crate::state::KeTab::Knowledge => &app.knowledge_lines,
-                    crate::state::KeTab::Entity => &app.entity_lines,
-                };
-                app.ke_scroll = (lines.len() as u16).saturating_sub(1);
-                Action::None
-            }
-            Panel::Diagnostics => {
-                app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
-                Action::None
-            }
-            _ => Action::None,
-        },
+        } => handle_end(app),
         KeyEvent {
             code: KeyCode::Char('G'),
             ..
         } if app.focused == Panel::Agent && !app.agent_input_active => {
-            app.agent_following = true;
+            app.set_agent_following(true);
             let visible = app.agent_visible_height.max(1);
-            app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
+            app.set_agent_scroll(app.agent_messages().len().saturating_sub(visible));
             Action::None
         }
         _ => Action::None,
     }
 }
 
-/// Main event loop: draw UI, poll events, drain agent messages.
+fn handle_scroll_down(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Tree => {
+            if let Some(sel) = app.tree_state.selected() {
+                let next = sel
+                    .saturating_add(1)
+                    .min(app.tree_items.len().saturating_sub(1));
+                app.tree_state.select(Some(next));
+                Action::TreeChanged
+            } else {
+                Action::None
+            }
+        }
+        Panel::KnowledgeEntity => {
+            let lines = match app.ke_tab {
+                crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                crate::state::KeTab::Entity => &app.entity_lines,
+            };
+            if app.ke_scroll < lines.len() as u16 {
+                app.ke_scroll += 1;
+            }
+            Action::None
+        }
+        Panel::Diagnostics => {
+            if app.scroll_diag < app.diagnostic_lines.len() as u16 {
+                app.scroll_diag += 1;
+            }
+            Action::None
+        }
+        Panel::Agent => {
+            app.set_agent_following(false);
+            let scroll = app.agent_scroll();
+            let lines_len = app.agent_messages().len();
+            if scroll < lines_len {
+                app.set_agent_scroll(scroll + 1);
+            }
+            Action::None
+        }
+    }
+}
+
+fn handle_scroll_up(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Tree => {
+            if let Some(sel) = app.tree_state.selected() {
+                app.tree_state.select(Some(sel.saturating_sub(1)));
+                Action::TreeChanged
+            } else {
+                Action::None
+            }
+        }
+        Panel::KnowledgeEntity => {
+            app.ke_scroll = app.ke_scroll.saturating_sub(1);
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = app.scroll_diag.saturating_sub(1);
+            Action::None
+        }
+        Panel::Agent => {
+            app.set_agent_following(false);
+            app.set_agent_scroll(app.agent_scroll().saturating_sub(1));
+            Action::None
+        }
+    }
+}
+
+fn handle_page_down(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Agent => {
+            app.set_agent_following(false);
+            let page = app.agent_visible_height.saturating_sub(1).max(1);
+            app.set_agent_scroll(app.agent_scroll().saturating_add(page));
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+fn handle_page_up(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Agent => {
+            app.set_agent_following(false);
+            let page = app.agent_visible_height.saturating_sub(1).max(1);
+            app.set_agent_scroll(app.agent_scroll().saturating_sub(page));
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+fn handle_end(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Agent => {
+            app.set_agent_following(true);
+            let visible = app.agent_visible_height.max(1);
+            app.set_agent_scroll(app.agent_messages().len().saturating_sub(visible));
+            Action::None
+        }
+        Panel::KnowledgeEntity => {
+            let lines = match app.ke_tab {
+                crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                crate::state::KeTab::Entity => &app.entity_lines,
+            };
+            app.ke_scroll = (lines.len() as u16).saturating_sub(1);
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
 pub async fn run_app(
     terminal: &mut Terminal<CrosstermBackend>,
     app: &mut App,
@@ -515,10 +350,17 @@ pub async fn run_app(
                     }
                     event => {
                         app.agent_requesting = false;
-                        app.agent_lines.extend(event_to_lines(event));
-                        if app.agent_following && app.agent_lines.len() > 1 {
-                            let visible = app.agent_visible_height.max(1);
-                            app.agent_scroll = app.agent_lines.len().saturating_sub(visible);
+                        if let Some(msg) = agent_event_to_message(event) {
+                            let kind = app.agent_kind;
+                            app.agent_messages_map.get_mut(&kind).unwrap().push(msg);
+                            if app.agent_following_map[&kind]
+                                && app.agent_messages_map[&kind].len() > 1
+                            {
+                                let visible = app.agent_visible_height.max(1);
+                                let scroll =
+                                    app.agent_messages_map[&kind].len().saturating_sub(visible);
+                                app.agent_scroll_map.insert(kind, scroll);
+                            }
                         }
                     }
                 }
@@ -537,8 +379,6 @@ pub async fn run_app(
         terminal.draw(|f| ui(f, app))?;
 
         if crossterm::event::poll(Duration::from_millis(100))? {
-            // Drain all pending events to avoid one-event-per-redraw bottleneck
-            // (e.g. terminals that send paste as individual Char events)
             loop {
                 let event = crossterm::event::read()?;
                 match event {
@@ -548,6 +388,12 @@ pub async fn run_app(
                         Action::SubmitAgent(input) => spawn_agent_task(app, input),
                         Action::OpenSettings => {
                             app.settings_modal_open = true;
+                        }
+                        Action::SwitchAgent => {
+                            let next = app.agent_kind.toggle();
+                            app.agent_kind = next;
+                            app.toast
+                                .info(format!("Switched to {} agent", app.agent_kind.label()));
                         }
                         Action::SettingsNav(pane, delta) => match pane {
                             SettingsPane::Provider => {
@@ -587,22 +433,34 @@ pub async fn run_app(
                                     || new_model != app.current_model)
                                 && let Some(pool) = build_pool(&new_provider, &new_model)
                             {
+                                let svc_arc = Arc::new(app.svc.clone());
+                                let ctx: Arc<dyn agentik_core::context::AgentContext> =
+                                    match app.agent_kind {
+                                        AgentKind::Kms => Arc::new(KmsContext::new(svc_arc)),
+                                        AgentKind::Knowledge => {
+                                            Arc::new(KnowledgeContext::new(svc_arc))
+                                        }
+                                    };
+
                                 let new_agent = agentik_core::Agent::builder()
                                     .with_model_pool(Arc::new(pool))
-                                    .with_context(Arc::new(KmsContext::new(Arc::new(
-                                        app.svc.clone(),
-                                    ))))
+                                    .with_context(ctx)
                                     .build()
                                     .await
                                     .map_err(|e| e.to_string())?;
 
-                                let old_agent =
-                                    std::mem::replace(&mut *app.agent.blocking_lock(), new_agent);
-                                drop(old_agent);
+                                app.agents.insert(
+                                    app.agent_kind,
+                                    Arc::new(tokio::sync::Mutex::new(new_agent)),
+                                );
 
                                 app.current_provider = new_provider.clone();
                                 app.current_model = new_model.clone();
                                 save_settings(&new_provider, &new_model);
+                                app.toast.success(format!(
+                                    "Switched to {} / {}",
+                                    app.current_provider, app.current_model
+                                ));
                             }
                             app.settings_modal_open = false;
                         }
@@ -617,7 +475,6 @@ pub async fn run_app(
                     }
                     _ => {}
                 }
-                // Stop draining if no more events are queued
                 if !crossterm::event::poll(Duration::from_secs(0))? {
                     break;
                 }
@@ -633,11 +490,11 @@ pub async fn run_app(
 
 fn build_pool(provider: &str, model: &str) -> Option<agentik_sdk::model::model_pool::ModelPool> {
     use agentik_sdk::model::model_pool::ModelPool;
-    use agentik_sdk::provider::mimo::MimoProvider;
+    use agentik_sdk::provider::LlmProvider;
 
     match provider {
         "mimo" => {
-            let mimo_provider = MimoProvider::new(None, None, None);
+            let mimo_provider = agentik_sdk::provider::mimo::MimoProvider::new(None, None, None);
             let m = mimo_provider.get_model(model).ok()?;
             let mut pool = ModelPool::new();
             pool.add_model(m);
@@ -660,18 +517,18 @@ fn spawn_agent_task(app: &mut App, user_input: String) {
         return;
     }
 
-    app.agent_lines.push(Line::from(Span::styled(
-        format!("> {}", user_input),
-        Style::default().fg(Color::Yellow),
-    )));
-    app.agent_lines.push(Line::from(""));
+    let kind = app.agent_kind;
+    app.agent_messages_mut().push(ChatMessage::User {
+        text: user_input.clone(),
+    });
+    app.agent_messages_mut().push(ChatMessage::Divider);
     app.agent_running = true;
-    app.agent_following = true;
+    app.set_agent_following(true);
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.agent_event_rx = Some(rx);
 
-    let agent_arc = app.agent.clone();
+    let agent_arc = app.agents.get(&kind).cloned().unwrap();
 
     tokio::spawn(async move {
         let mut agent = agent_arc.lock().await;

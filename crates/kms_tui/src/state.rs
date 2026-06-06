@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use kms::Index;
@@ -5,12 +6,49 @@ use ratatui::text::Line;
 use ratatui::widgets::{ListItem, ListState};
 use tokio::sync::mpsc;
 
+use crate::chat::ChatMessage;
+use crate::components::toast::ToastManager;
+use crate::theme::Theme;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AgentKind {
+    Kms,
+    Knowledge,
+}
+
+impl AgentKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Kms => "KMS",
+            Self::Knowledge => "Retrieval",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Kms => Self::Knowledge,
+            Self::Knowledge => Self::Kms,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Tree,
     KnowledgeEntity,
     Agent,
     Diagnostics,
+}
+
+impl std::fmt::Display for Panel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Panel::Tree => write!(f, "Tree"),
+            Panel::KnowledgeEntity => write!(f, "Knowledge"),
+            Panel::Agent => write!(f, "Agent"),
+            Panel::Diagnostics => write!(f, "Diag"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,34 +76,47 @@ pub enum Action {
     SubmitAgent(String),
     OpenSettings,
     SettingsNav(SettingsPane, isize),
+    #[allow(dead_code)]
     SettingsSwitchPane(SettingsPane),
     SettingsConfirm,
+    SwitchAgent,
 }
 
 pub struct App {
     pub should_quit: bool,
+    pub theme: Theme,
+    pub toast: ToastManager,
+
     pub tree_items: Vec<ListItem<'static>>,
     pub tree_nodes: Vec<Index>,
     pub tree_state: ListState,
+
     pub diagnostic_lines: Vec<Line<'static>>,
     pub scroll_diag: u16,
+
     pub knowledge_lines: Vec<Line<'static>>,
     pub entity_lines: Vec<Line<'static>>,
-    pub agent_lines: Vec<Line<'static>>,
-    pub agent_scroll: usize,
-    pub agent_visible_height: usize,
+
     pub focused: Panel,
     pub svc: kms::KmsService,
+
     pub ke_tab: KeTab,
     pub ke_scroll: u16,
-    pub agent: Arc<tokio::sync::Mutex<agentik_core::Agent>>,
+
+    pub agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
+    pub agent_kind: AgentKind,
+    pub agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>>,
+    pub agent_scroll_map: HashMap<AgentKind, usize>,
+    pub agent_following_map: HashMap<AgentKind, bool>,
+    pub agent_visible_height: usize,
     pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_types::AgentUiEvent>>,
     pub agent_running: bool,
-    pub agent_following: bool,
     pub agent_requesting: bool,
     pub spinner_tick: usize,
+
     pub agent_input: String,
     pub agent_input_active: bool,
+
     pub settings_modal_open: bool,
     pub settings_pane: SettingsPane,
     pub settings_selected_provider: usize,
@@ -77,14 +128,14 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
-        unreachable!("use App::new(svc, agent) instead")
+        unreachable!("use App::new(svc, agents, ...) instead")
     }
 }
 
 impl App {
     pub fn new(
         svc: kms::KmsService,
-        agent: Arc<tokio::sync::Mutex<agentik_core::Agent>>,
+        agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
         providers: Vec<SettingsProvider>,
         current_provider: String,
         current_model: String,
@@ -106,8 +157,26 @@ impl App {
             })
             .unwrap_or(0);
 
+        let agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>> = {
+            let mut m = HashMap::new();
+            m.insert(AgentKind::Kms, vec![ChatMessage::Divider]);
+            m.insert(AgentKind::Knowledge, vec![ChatMessage::Divider]);
+            m
+        };
+
+        let agent_scroll_map = HashMap::from([
+            (AgentKind::Kms, 0),
+            (AgentKind::Knowledge, 0),
+        ]);
+        let agent_following_map = HashMap::from([
+            (AgentKind::Kms, true),
+            (AgentKind::Knowledge, true),
+        ]);
+
         Self {
             should_quit: false,
+            theme: Theme::default_theme(),
+            toast: ToastManager::new(),
             tree_items: vec![],
             tree_nodes: vec![],
             tree_state,
@@ -115,17 +184,18 @@ impl App {
             scroll_diag: 0,
             knowledge_lines: vec![Line::from("Select a Knowledge node")],
             entity_lines: vec![Line::from("Entity view")],
-            agent_lines: vec![Line::from("Agent — press Enter to start typing")],
-            agent_scroll: 0,
-            agent_visible_height: 10,
             focused: Panel::Tree,
             svc,
             ke_tab: KeTab::Knowledge,
             ke_scroll: 0,
-            agent,
+            agents,
+            agent_kind: AgentKind::Kms,
+            agent_messages_map,
+            agent_scroll_map,
+            agent_following_map,
+            agent_visible_height: 10,
             agent_event_rx: None,
             agent_running: false,
-            agent_following: true,
             agent_requesting: false,
             spinner_tick: 0,
             agent_input: String::new(),
@@ -140,39 +210,62 @@ impl App {
         }
     }
 
+    pub fn agent_messages(&self) -> &[ChatMessage] {
+        &self.agent_messages_map[&self.agent_kind]
+    }
+
+    pub fn agent_messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        self.agent_messages_map.get_mut(&self.agent_kind).unwrap()
+    }
+
+    pub fn agent_scroll(&self) -> usize {
+        self.agent_scroll_map[&self.agent_kind]
+    }
+
+    pub fn set_agent_scroll(&mut self, val: usize) {
+        self.agent_scroll_map.insert(self.agent_kind, val);
+    }
+
+    #[allow(dead_code)]
+    pub fn agent_following(&self) -> bool {
+        self.agent_following_map[&self.agent_kind]
+    }
+
+    pub fn set_agent_following(&mut self, val: bool) {
+        self.agent_following_map.insert(self.agent_kind, val);
+    }
+
     pub async fn on_tree_select(&mut self) {
-        if let Some(sel) = self.tree_state.selected() {
-            if let Some(node) = self.tree_nodes.get(sel) {
-                if node.target_type == kms::TargetType::Knowledge {
-                    if let Some(target_id) = node.target {
-                        match self.svc.get_knowledge(target_id).await {
-                            Ok(k) => {
-                                self.knowledge_lines = vec![
-                                    Line::from(format!("Title: {}", k.title)),
-                                    Line::from(format!("Type: {:?}", k.knowledge_type)),
-                                    Line::from(format!("Entities: {}", k.entities.len())),
-                                    Line::from(""),
-                                ];
-                                if let Some(content) = &k.content {
-                                    for line in content.lines() {
-                                        self.knowledge_lines.push(Line::from(line.to_owned()));
-                                    }
-                                } else {
-                                    self.knowledge_lines.push(Line::from("(no content)"));
-                                }
-                                self.load_entity_lines(&k.entities).await;
-                            }
-                            Err(e) => {
-                                self.knowledge_lines = vec![Line::from(format!("Error: {}", e))];
-                                self.entity_lines = vec![Line::from("")];
-                            }
+        if let Some(sel) = self.tree_state.selected()
+            && let Some(node) = self.tree_nodes.get(sel)
+            && node.target_type == kms::TargetType::Knowledge
+            && let Some(target_id) = node.target
+        {
+            match self.svc.get_knowledge(target_id).await {
+                Ok(k) => {
+                    self.knowledge_lines = vec![
+                        Line::from(format!("Title: {}", k.title)),
+                        Line::from(format!("Type: {:?}", k.knowledge_type)),
+                        Line::from(format!("Entities: {}", k.entities.len())),
+                        Line::from(""),
+                    ];
+                    if let Some(content) = &k.content {
+                        for line in content.lines() {
+                            self.knowledge_lines.push(Line::from(line.to_owned()));
                         }
+                    } else {
+                        self.knowledge_lines.push(Line::from("(no content)"));
                     }
-                } else {
-                    self.knowledge_lines = vec![Line::from("Select a Knowledge node")];
+                    self.load_entity_lines(&k.entities).await;
+                }
+                Err(e) => {
+                    self.knowledge_lines = vec![Line::from(format!("Error: {}", e))];
                     self.entity_lines = vec![Line::from("")];
                 }
             }
+        } else {
+            self.knowledge_lines = vec![Line::from("Select a Knowledge node")];
+            self.entity_lines = vec![Line::from("")];
         }
     }
 
@@ -201,7 +294,7 @@ impl App {
                     }
                 }
                 Err(_) => {
-                    lines.push(Line::from(format!("  [error loading entity]")));
+                    lines.push(Line::from("  [error loading entity]"));
                 }
             }
         }
@@ -228,8 +321,8 @@ impl App {
             let title = node.title.as_deref().unwrap_or("(unnamed)");
             let indent = "  ".repeat(depth);
             let icon = match node.target_type {
-                kms::TargetType::Group => "▸ ",
-                kms::TargetType::Knowledge => "● ",
+                kms::TargetType::Group => self.theme.tree_group_icon,
+                kms::TargetType::Knowledge => self.theme.tree_item_icon,
             };
             self.tree_items
                 .push(ListItem::new(format!("{}{}{}", indent, icon, title)));
@@ -256,25 +349,23 @@ impl App {
             if diagnostics.is_empty() {
                 self.diagnostic_lines = vec![Line::from(ratatui::text::Span::styled(
                     "No issues found.".to_owned(),
-                    ratatui::style::Style::default().fg(ratatui::style::Color::Green),
+                    self.theme.success_style(),
                 ))];
             } else {
                 let mut lines = vec![Line::from(format!("{} issues found:", diagnostics.len()))];
                 for d in &diagnostics {
-                    lines.push(crate::styles::style_diagnostic_line(&format!(
-                        "[{}] {} — {}",
-                        d.severity.label(),
-                        d.code,
-                        d.message
-                    )));
+                    lines.push(crate::styles::style_diagnostic_line(
+                        &format!("[{}] {} — {}", d.severity.label(), d.code, d.message),
+                        &self.theme,
+                    ));
                     if !d.location.is_empty() {
-                        lines.push(crate::styles::style_diagnostic_line(&d.location));
+                        lines.push(crate::styles::style_diagnostic_line(&d.location, &self.theme));
                     }
                     for action in &d.suggested_actions {
-                        lines.push(crate::styles::style_diagnostic_line(&format!(
-                            "  → {}",
-                            action
-                        )));
+                        lines.push(crate::styles::style_diagnostic_line(
+                            &format!("  → {}", action),
+                            &self.theme,
+                        ));
                     }
                     lines.push(Line::from(""));
                 }
