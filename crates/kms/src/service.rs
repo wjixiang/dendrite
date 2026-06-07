@@ -53,6 +53,17 @@ impl KmsService {
         *self.inner.pointer.write().await = id;
     }
 
+    /// Return the system root index (the lone `Index` with
+    /// `parent_id = NULL`). Used by the parallel-subtree orchestrator
+    /// to know where to hang staging areas.
+    pub async fn find_root(&self) -> Result<Index, String> {
+        self.storage
+            .index
+            .find_root()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     pub async fn create_entity(
         &self,
         names: Vec<Nomenclature>,
@@ -891,6 +902,78 @@ impl KmsService {
         diagnostics::run_diagnostics(&self.storage).await
     }
 
+    /// Create a sibling [`KmsService`] that shares the underlying
+    /// [`Storage`] (and thus the SQLite connection pool) but owns an
+    /// independent pointer. Sub-agents use this so that they can each
+    /// carry their own navigation position without disturbing one
+    /// another.
+    pub fn with_pointer(&self, pointer: Uuid) -> KmsService {
+        KmsService {
+            inner: std::sync::Arc::new(Inner {
+                pointer: tokio::sync::RwLock::new(pointer),
+            }),
+            storage: self.storage.clone(),
+        }
+    }
+
+    /// Move every direct child of `sub_root_id` under
+    /// `target_parent_id` (appended to the existing siblings) and
+    /// delete the now-empty `sub_root_id` node. Positions on the
+    /// target parent are reindexed afterwards.
+    pub async fn merge_subtree(
+        &self,
+        sub_root_id: Uuid,
+        target_parent_id: Uuid,
+    ) -> Result<usize, String> {
+        if sub_root_id == target_parent_id {
+            return Err("sub_root and target_parent must differ".into());
+        }
+
+        let sub_root = self.get_index(sub_root_id).await?;
+        if sub_root.parent_id.is_none() {
+            return Err("cannot merge the system root".into());
+        }
+
+        let children = self
+            .storage
+            .index
+            .children_of(Some(sub_root_id))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let existing_count = self
+            .storage
+            .index
+            .children_of(Some(target_parent_id))
+            .await
+            .map_err(|e| e.to_string())?
+            .len();
+
+        for (i, child) in children.iter().enumerate() {
+            self.storage
+                .index
+                .reparent(child.id, target_parent_id, (existing_count + i) as i64)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        if !children.is_empty() {
+            self.storage
+                .index
+                .reindex_positions(Some(target_parent_id))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        self.storage
+            .index
+            .delete(sub_root_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(children.len())
+    }
+
     pub async fn render_location(&self) -> Result<String, String> {
         let current = self.get_pointer().await;
 
@@ -1612,6 +1695,116 @@ mod tests {
             .await
             .unwrap();
         assert!(empty.is_empty());
+    }
+
+    // ---------- parallel-subtree tests ----------
+
+    #[tokio::test]
+    async fn test_with_pointer_shares_storage() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let sub = svc.with_pointer(tree.a.id);
+        // Reading a node still works against the shared storage.
+        let got = sub.get_index(tree.a.id).await.unwrap();
+        assert_eq!(got.id, tree.a.id);
+    }
+
+    #[tokio::test]
+    async fn test_with_pointer_isolates_pointer() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let _ = svc.set_pointer_for_test(tree.root.id).await;
+        let sub = svc.with_pointer(tree.a.id);
+
+        // Navigating on the sub-service must not move the parent pointer.
+        sub.navigate("..").await.unwrap();
+        assert_eq!(svc.get_pointer().await, tree.root.id);
+    }
+
+    #[tokio::test]
+    async fn test_merge_subtree_reparents_children_and_deletes_staging() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        // Build a staging area: root -> [staging -> [x, y]]
+        let staging = svc
+            .create_index(
+                tree.root.id,
+                Some("staging-测试".into()),
+                None,
+                Some(TargetType::Group),
+            )
+            .await
+            .unwrap();
+        let x = svc
+            .create_index(
+                staging.id,
+                Some("x".into()),
+                None,
+                Some(TargetType::Group),
+            )
+            .await
+            .unwrap();
+        let y = svc
+            .create_index(
+                staging.id,
+                Some("y".into()),
+                None,
+                Some(TargetType::Group),
+            )
+            .await
+            .unwrap();
+
+        let moved = svc
+            .merge_subtree(staging.id, tree.parent.id)
+            .await
+            .unwrap();
+        assert_eq!(moved, 2);
+
+        // staging node itself is gone.
+        let err = svc.get_index(staging.id).await.unwrap_err();
+        assert!(matches!(err, String) );
+
+        // x and y now sit under tree.parent with consecutive positions.
+        let new_children = svc.get_children(Some(tree.parent.id)).await.unwrap();
+        let titles: Vec<String> = new_children
+            .iter()
+            .map(|c| c.title.clone().unwrap_or_default())
+            .collect();
+        assert!(titles.contains(&"x".to_string()));
+        assert!(titles.contains(&"y".to_string()));
+        // Positions for x and y should be >= previous sibling count.
+        let x_pos = new_children.iter().find(|c| c.id == x.id).unwrap().position;
+        let y_pos = new_children.iter().find(|c| c.id == y.id).unwrap().position;
+        assert!(x_pos >= 2);
+        assert!(y_pos >= 2);
+        assert_ne!(x_pos, y_pos);
+    }
+
+    #[tokio::test]
+    async fn test_merge_subtree_rejects_root() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let err = svc
+            .merge_subtree(tree.root.id, tree.parent.id)
+            .await
+            .unwrap_err();
+        assert!(err.contains("root"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_subtree_rejects_self() {
+        let svc = setup_service().await;
+        let tree = build_sample_tree(&svc).await;
+
+        let err = svc
+            .merge_subtree(tree.parent.id, tree.parent.id)
+            .await
+            .unwrap_err();
+        assert!(err.contains("differ"));
     }
 }
 

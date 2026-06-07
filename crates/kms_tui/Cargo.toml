@@ -13,6 +13,7 @@ agent-compose = { path = "../agent-compose" }
 agent-knowledge = { path = "../agent-knowledge" }
 agentik-sdk = { workspace = true }
 agentik-types = { workspace = true, features = ["http"] }
+dendrite-tools = { path = "../dendrite-tools" }
 kms = { path = "../kms" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

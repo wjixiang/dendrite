@@ -6,6 +6,8 @@ description = "Knowledge construction expert agent context."
 
 [dependencies]
 agentik-core = { workspace = true }
+agentik-sdk = { workspace = true }
+agentik-types = { workspace = true }
 
 # Domain-specific tools (KMS). These are external to agentik-core.
 dendrite-tools = { path = "../dendrite-tools" }

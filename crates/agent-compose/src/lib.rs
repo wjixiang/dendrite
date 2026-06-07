@@ -8,10 +8,18 @@
 //! - [`diagnostics`]: conversion from KMS diagnostics to runtime diagnostics.
 //! - [`prompt`]: the system-prompt section injected into KMS-aware agents.
 //! - [`tools`]: classification of KMS tools (read-only vs. mutation).
+//! - [`subtree_context`]: [`SubTreeComposeContext`] for parallel sub-agents.
+//! - [`parallel_context`]: [`ParallelComposeContext`] for the orchestrator.
 
 mod context;
 mod diagnostics;
+mod parallel_context;
+mod parallel_prompt;
 mod prompt;
+mod subtree_context;
+mod subtree_prompt;
 mod tools;
 
 pub use context::KmsContext;
+pub use parallel_context::ParallelComposeContext;
+pub use subtree_context::SubTreeComposeContext;

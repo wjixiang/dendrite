@@ -1,312 +1,33 @@
-use std::sync::Arc;
+mod agent;
+pub mod agent_task {
+    pub use super::agent::*;
+}
+mod events;
+mod keys;
+mod paste;
+#[cfg(test)]
+mod tests;
+
+pub use agent::spawn_agent_task;
+pub use events::{
+    agent_event_to_message, append_to_streaming_assistant, append_to_streaming_thinking,
+    finalize_streaming_history, handle_final_event,
+};
+pub use keys::handle_key_event;
+pub use paste::{PASTE_SUMMARY_LEN_THRESHOLD, PASTE_SUMMARY_LINE_THRESHOLD, summarize_paste};
+
 use std::time::Duration;
 
-use agent_compose::KmsContext;
-use agent_knowledge::KnowledgeContext;
 use agentik_types::AgentUiEvent;
-use agentik_types::messages::ContentBlock;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::Event;
 use ratatui::Terminal;
 
-use crate::CrosstermBackend;
 use crate::chat::ChatMessage;
-use crate::layout::LayoutMode;
-use crate::settings::save_settings;
-use crate::state::{Action, AgentKind, App, Panel, SettingsPane};
+use crate::state::{Action, App, Panel, SettingsPane};
 use crate::widgets::ui;
 
-fn agent_event_to_message(event: AgentUiEvent) -> Option<ChatMessage> {
-    match event {
-        AgentUiEvent::LlmResponse(text) => Some(ChatMessage::Assistant { text }),
-        AgentUiEvent::Thinking(text) => Some(ChatMessage::Thinking { text }),
-        AgentUiEvent::ToolCall { name, input } => Some(ChatMessage::ToolCall { name, input }),
-        AgentUiEvent::ToolResult { ok, content } => Some(ChatMessage::ToolResult { ok, content }),
-        AgentUiEvent::Done => Some(ChatMessage::Done),
-        AgentUiEvent::Error(msg) => Some(ChatMessage::Error { message: msg }),
-        AgentUiEvent::Requesting => None,
-    }
-}
-
-pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
-    if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
-        return match key {
-            KeyEvent {
-                code: KeyCode::Enter,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
-                let input = std::mem::take(&mut app.agent_input);
-                if input.is_empty() {
-                    app.agent_input_active = false;
-                    Action::None
-                } else {
-                    app.agent_input_active = false;
-                    Action::SubmitAgent(input)
-                }
-            }
-            KeyEvent {
-                code: KeyCode::Esc, ..
-            } => {
-                app.agent_input.clear();
-                app.agent_input_active = false;
-                Action::None
-            }
-            KeyEvent {
-                code: KeyCode::Backspace,
-                ..
-            } => {
-                app.agent_input.pop();
-                Action::None
-            }
-            KeyEvent {
-                code: KeyCode::Char(c),
-                ..
-            } => {
-                app.agent_input.push(c);
-                Action::None
-            }
-            _ => Action::None,
-        };
-    }
-
-    if app.settings_modal_open {
-        return match key {
-            KeyEvent {
-                code: KeyCode::Esc, ..
-            } => {
-                app.settings_modal_open = false;
-                Action::None
-            }
-            KeyEvent {
-                code: KeyCode::Tab, ..
-            } => {
-                app.settings_pane = match app.settings_pane {
-                    SettingsPane::Provider => SettingsPane::Model,
-                    SettingsPane::Model => SettingsPane::Provider,
-                };
-                Action::None
-            }
-            KeyEvent {
-                code: KeyCode::Up | KeyCode::Char('k'),
-                ..
-            } => Action::SettingsNav(app.settings_pane, -1),
-            KeyEvent {
-                code: KeyCode::Down | KeyCode::Char('j'),
-                ..
-            } => Action::SettingsNav(app.settings_pane, 1),
-            KeyEvent {
-                code: KeyCode::Enter,
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => Action::SettingsConfirm,
-            _ => Action::None,
-        };
-    }
-
-    match key {
-        KeyEvent {
-            code: KeyCode::Char('q'),
-            modifiers: KeyModifiers::NONE,
-            ..
-        } => Action::Quit,
-        KeyEvent {
-            code: KeyCode::Char('s'),
-            modifiers: KeyModifiers::NONE,
-            ..
-        } => Action::OpenSettings,
-        KeyEvent {
-            code: KeyCode::Char('a'),
-            modifiers: KeyModifiers::NONE,
-            ..
-        } if app.focused == Panel::Agent && !app.agent_input_active && !app.agent_running => {
-            Action::SwitchAgent
-        }
-        KeyEvent {
-            code: KeyCode::Tab, ..
-        } => {
-            let mode = LayoutMode::from_width(0);
-            let order = mode.panel_order();
-            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
-            let next = (idx + 1) % order.len();
-            app.focused = order[next];
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::BackTab,
-            ..
-        } => {
-            let mode = LayoutMode::from_width(0);
-            let order = mode.panel_order();
-            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
-            let prev = if idx == 0 { order.len() - 1 } else { idx - 1 };
-            app.focused = order[prev];
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Char('H'),
-            ..
-        } => {
-            let mode = LayoutMode::from_width(0);
-            let order = mode.panel_order();
-            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
-            let prev = if idx == 0 { order.len() - 1 } else { idx - 1 };
-            app.focused = order[prev];
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Char('L'),
-            ..
-        } => {
-            let mode = LayoutMode::from_width(0);
-            let order = mode.panel_order();
-            let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
-            let next = (idx + 1) % order.len();
-            app.focused = order[next];
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Enter,
-            modifiers: KeyModifiers::NONE,
-            ..
-        } if app.focused == Panel::Agent && !app.agent_running => {
-            app.agent_input_active = true;
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Char('t'),
-            modifiers: KeyModifiers::NONE,
-            ..
-        } if app.focused == Panel::KnowledgeEntity => {
-            app.ke_tab = match app.ke_tab {
-                crate::state::KeTab::Knowledge => crate::state::KeTab::Entity,
-                crate::state::KeTab::Entity => crate::state::KeTab::Knowledge,
-            };
-            app.ke_scroll = 0;
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Char('j') | KeyCode::Down,
-            ..
-        } => handle_scroll_down(app),
-        KeyEvent {
-            code: KeyCode::Char('k') | KeyCode::Up,
-            ..
-        } => handle_scroll_up(app),
-        KeyEvent {
-            code: KeyCode::End, ..
-        } => handle_end(app),
-        KeyEvent {
-            code: KeyCode::Char('G'),
-            ..
-        } if app.focused == Panel::Agent && !app.agent_input_active => {
-            // "G" — re-anchor the Agent panel to the bottom and
-            // re-enable auto-follow, in one keystroke. The render
-            // pass clamps the oversized scroll offset back to the
-            // real last line, so the user always lands at the
-            // tail.
-            app.agent_auto_follow = true;
-            app.agent_scroll = u16::MAX;
-            Action::None
-        }
-        _ => Action::None,
-    }
-}
-
-fn handle_scroll_down(app: &mut App) -> Action {
-    match app.focused {
-        Panel::Tree => {
-            if let Some(sel) = app.tree_state.selected() {
-                let next = sel
-                    .saturating_add(1)
-                    .min(app.tree_items.len().saturating_sub(1));
-                app.tree_state.select(Some(next));
-                Action::TreeChanged
-            } else {
-                Action::None
-            }
-        }
-        Panel::KnowledgeEntity => {
-            let lines = match app.ke_tab {
-                crate::state::KeTab::Knowledge => &app.knowledge_lines,
-                crate::state::KeTab::Entity => &app.entity_lines,
-            };
-            if app.ke_scroll < lines.len() as u16 {
-                app.ke_scroll += 1;
-            }
-            Action::None
-        }
-        Panel::Diagnostics => {
-            if app.scroll_diag < app.diagnostic_lines.len() as u16 {
-                app.scroll_diag += 1;
-            }
-            Action::None
-        }
-        Panel::Agent => {
-            // Any manual scroll disengages auto-follow. The user
-            // has expressed an intent to inspect older messages;
-            // silently re-snapping to the bottom on the next
-            // event would fight that intent.
-            app.agent_auto_follow = false;
-            // Bound checked at render time. u16::MAX is impossible
-            // to reach via single `+1` increments from a u16::MAX-1
-            // starting point, so no overflow here.
-            app.agent_scroll = app.agent_scroll.saturating_add(1);
-            Action::None
-        }
-    }
-}
-
-fn handle_scroll_up(app: &mut App) -> Action {
-    match app.focused {
-        Panel::Tree => {
-            if let Some(sel) = app.tree_state.selected() {
-                app.tree_state.select(Some(sel.saturating_sub(1)));
-                Action::TreeChanged
-            } else {
-                Action::None
-            }
-        }
-        Panel::KnowledgeEntity => {
-            app.ke_scroll = app.ke_scroll.saturating_sub(1);
-            Action::None
-        }
-        Panel::Diagnostics => {
-            app.scroll_diag = app.scroll_diag.saturating_sub(1);
-            Action::None
-        }
-        Panel::Agent => {
-            app.agent_auto_follow = false;
-            app.agent_scroll = app.agent_scroll.saturating_sub(1);
-            Action::None
-        }
-    }
-}
-
-fn handle_end(app: &mut App) -> Action {
-    match app.focused {
-        Panel::Agent => {
-            // End in the Agent panel re-enables auto-follow and
-            // snaps to the bottom (overshoot; the render pass
-            // clamps to the real last visual line).
-            app.agent_auto_follow = true;
-            app.agent_scroll = u16::MAX;
-            Action::None
-        }
-        Panel::KnowledgeEntity => {
-            let lines = match app.ke_tab {
-                crate::state::KeTab::Knowledge => &app.knowledge_lines,
-                crate::state::KeTab::Entity => &app.entity_lines,
-            };
-            app.ke_scroll = (lines.len() as u16).saturating_sub(1);
-            Action::None
-        }
-        Panel::Diagnostics => {
-            app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
-            Action::None
-        }
-        _ => Action::None,
-    }
-}
+use crate::CrosstermBackend;
+use crate::settings::save_settings;
 
 pub async fn run_app(
     terminal: &mut Terminal<CrosstermBackend>,
@@ -315,45 +36,205 @@ pub async fn run_app(
     loop {
         let mut pending_refresh = false;
 
-        if let Some(rx) = &mut app.agent_event_rx {
+        // Collect all pending events from the agent channel, then
+        // process them. Draining into a Vec first avoids a mutable
+        // borrow conflict: `rx` borrows `app.event_rx` while the
+        // helper functions need `&mut app` for the messages map.
+        let agent_events: Vec<AgentUiEvent> = if let Some(rx) = &mut app.agent_event_rx {
+            let mut events = Vec::new();
             while let Ok(event) = rx.try_recv() {
-                match event {
-                    AgentUiEvent::Done => {
-                        app.agent_running = false;
-                        app.agent_requesting = false;
-                    }
-                    AgentUiEvent::Requesting => {
-                        app.agent_requesting = true;
-                    }
-                    event => {
-                        app.agent_requesting = false;
-                        if let Some(msg) = agent_event_to_message(event) {
-                            let kind = app.agent_kind;
-                            app.agent_messages_map.get_mut(&kind).unwrap().push(msg);
-                            // Auto-follow: if the user has not
-                            // disengaged, anchor the scroll to the
-                            // bottom of the new content. The
-                            // render pass will clamp the overshoot
-                            // to the true last visual line.
-                            if app.agent_auto_follow {
-                                app.agent_scroll = u16::MAX;
-                            }
-                        }
-                    }
+                events.push(event);
+            }
+            events
+        } else {
+            Vec::new()
+        };
+
+        for event in agent_events {
+            tracing::debug!("{:?}", &event);
+            match event {
+                AgentUiEvent::Done => {
+                    // Finalize any still-streaming messages
+                    let kind = app.agent_kind;
+                    let history = app.agent_messages_map.get_mut(&kind).unwrap();
+                    finalize_streaming_history(history);
+                    history.push(ChatMessage::Done);
+                    app.agent_running = false;
+                    app.agent_requesting = false;
+                    app.agent_usage_tokens = None;
+                    // Refresh the tree one final time so the user sees
+                    // any knowledge entries created during this run.
+                    pending_refresh = true;
                 }
-                pending_refresh = true;
+                AgentUiEvent::Requesting => {
+                    app.agent_requesting = true;
+                }
+                AgentUiEvent::TextDelta(token) => {
+                    app.agent_requesting = false;
+                    append_to_streaming_assistant(app, &token);
+                }
+                AgentUiEvent::ThinkingDelta(token) => {
+                    app.agent_requesting = false;
+                    append_to_streaming_thinking(app, &token);
+                }
+                AgentUiEvent::UsageUpdate { output_tokens, .. } => {
+                    app.agent_usage_tokens = Some(output_tokens);
+                }
+                // Stream lifecycle events — absorbed silently.
+                AgentUiEvent::StreamStart { .. }
+                | AgentUiEvent::ContentBlockStart { .. }
+                | AgentUiEvent::ContentBlockStop { .. }
+                | AgentUiEvent::StreamDelta { .. } => {}
+                // Aggregated responses and tool events.
+                // ToolResult may have modified the knowledge tree
+                // (e.g. direct kms_create_knowledge), so refresh.
+                event @ AgentUiEvent::ToolResult { .. } => {
+                    app.agent_requesting = false;
+                    handle_final_event(app, event);
+                    pending_refresh = true;
+                }
+                // LlmResponse, Thinking, ToolCall, Error — no tree change.
+                event => {
+                    app.agent_requesting = false;
+                    handle_final_event(app, event);
+                }
             }
         }
 
-        if pending_refresh {
-            app.refresh_tree().await;
+        // TODO: 改进为后端维护多Agent进程池，以更好的支持多Agent
+        //
+        // Drain the parallel-dispatch side-channel. Each event
+        // updates the panel state machine; we mark `pending_refresh`
+        // whenever a sub-agent finishes or fails so the tree view
+        // grows incrementally as staging areas get populated.
+        //
+        // In addition to driving the panel, sub-agent LLM responses
+        // are also pushed into the **main chat history** so the user
+        // sees the actual work the sub-agents produced, the same way
+        // they see the orchestrator's `Assistant` text. Without this,
+        // the parallel panel's collapsed-by-default rows hide every
+        // sub-agent response and the user is left watching the
+        // orchestrator's tool-call marker for minutes with no
+        // feedback ("看不到Agent响应的任何内容"). The panel and the
+        // chat history are complementary, not exclusive: the panel
+        // shows the compact per-sub-agent tree, the chat history
+        // shows the full text inline.
+        if let Some(rx) = &mut app.parallel_progress_rx {
+            while let Ok(event) = rx.try_recv() {
+                use dendrite_tools::parallel_progress::ParallelProgress as P;
+                if app.parallel_panel.is_none() {
+                    // Lazy-init the panel on the first event. We use
+                    // `DispatchStarted` to learn the total; if we
+                    // somehow receive an event before DispatchStarted
+                    // (e.g. a StagingCreated with no preceding start)
+                    // we still init the panel with `total = 0` and let
+                    // the subsequent DispatchStarted correct it.
+                    let total = if let P::DispatchStarted { total } = &event {
+                        *total
+                    } else {
+                        0
+                    };
+                    app.parallel_panel =
+                        Some(crate::parallel_panel::ParallelPanelState::new(total));
+                }
+                if let Some(panel) = app.parallel_panel.as_mut() {
+                    panel.apply(&event);
+                }
+                // Sub-agent LLM text: surface in the main chat
+                // history. The agent is identified by `app.agent_kind`
+                // (Parallel at the time the user dispatched), which
+                // is the same bucket the orchestrator's events are
+                // going into, so the two streams interleave naturally.
+                //
+                // During streaming, `TextDelta` tokens are appended to
+                // the last `SubAgentResponse` with a matching title.
+                // When the aggregated `LlmResponse` arrives, it
+                // replaces the streaming text with the authoritative
+                // full response.
+                if let P::SubAgentEvent { title, event } = &event {
+                    match event {
+                        AgentUiEvent::TextDelta(token) => {
+                            let kind = app.agent_kind;
+                            if let Some(history) = app.agent_messages_map.get_mut(&kind) {
+                                let found = history.iter_mut().rev().find(|m| {
+                                    matches!(
+                                        m,
+                                        ChatMessage::SubAgentResponse {
+                                            title: t, ..
+                                        } if t == title
+                                    )
+                                });
+                                if let Some(ChatMessage::SubAgentResponse { text, .. }) = found {
+                                    text.push_str(token);
+                                } else {
+                                    history.push(ChatMessage::SubAgentResponse {
+                                        title: title.clone(),
+                                        text: token.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        AgentUiEvent::LlmResponse(text) => {
+                            let kind = app.agent_kind;
+                            if let Some(history) = app.agent_messages_map.get_mut(&kind) {
+                                let found = history.iter_mut().rev().find(|m| {
+                                    matches!(
+                                        m,
+                                        ChatMessage::SubAgentResponse {
+                                            title: t, ..
+                                        } if t == title
+                                    )
+                                });
+                                if let Some(ChatMessage::SubAgentResponse { text, .. }) = found {
+                                    // Replace the streaming text with
+                                    // the authoritative full response.
+                                    *text = text.clone();
+                                } else if !text.is_empty() {
+                                    history.push(ChatMessage::SubAgentResponse {
+                                        title: title.clone(),
+                                        text: text.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                match &event {
+                    P::SubAgentCompleted { .. } | P::SubAgentFailed { .. } => {
+                        pending_refresh = true;
+                    }
+                    _ => {}
+                }
+            }
         }
 
+        // Advance the spinner *before* rendering so the latest frame
+        // always carries the updated glyph.
         if app.agent_requesting {
             app.spinner_tick = (app.spinner_tick + 1) % 8;
         }
 
+        // Render FIRST so the Agent panel (and every other panel)
+        // always reflects the latest event state on every frame.
+        // Any pending tree refresh happens *after* the render, so a
+        // slow refresh_tree() never delays UI updates.
         terminal.draw(|f| ui(f, app))?;
+
+        if pending_refresh {
+            // Debounce: if we refreshed within the last 200ms, defer
+            // to the next loop iteration. The next event will re-set
+            // `pending_refresh` and we'll check again.
+            const REFRESH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+            let should_refresh = match app.last_tree_refresh_at {
+                Some(t) => t.elapsed() >= REFRESH_DEBOUNCE,
+                None => true,
+            };
+            if should_refresh {
+                app.refresh_tree().await;
+                app.last_tree_refresh_at = Some(std::time::Instant::now());
+            }
+        }
 
         if crossterm::event::poll(Duration::from_millis(100))? {
             loop {
@@ -369,12 +250,6 @@ pub async fn run_app(
                         Action::SwitchAgent => {
                             let next = app.agent_kind.toggle();
                             app.agent_kind = next;
-                            // Reset scroll AND auto-follow when
-                            // switching agents; the new
-                            // conversation should start at the top
-                            // and follow new content.
-                            app.agent_scroll = 0;
-                            app.agent_auto_follow = true;
                             app.toast
                                 .info(format!("Switched to {} agent", app.agent_kind.label()));
                         }
@@ -385,10 +260,13 @@ pub async fn run_app(
                                     (app.settings_selected_provider as isize + delta)
                                         .clamp(0, max as isize)
                                         as usize;
+                                // Reset model selection when switching providers.
+                                app.settings_selected_model = 0;
                             }
                             SettingsPane::Model => {
-                                let provider_idx = app.settings_selected_provider;
-                                if let Some(provider) = app.providers.get(provider_idx) {
+                                if let Some(provider) =
+                                    app.providers.get(app.settings_selected_provider)
+                                {
                                     let max = provider.models.len().saturating_sub(1);
                                     app.settings_selected_model =
                                         (app.settings_selected_model as isize + delta)
@@ -396,65 +274,270 @@ pub async fn run_app(
                                             as usize;
                                 }
                             }
+                            SettingsPane::Pool => {
+                                let max = app.pool_entries.len().saturating_sub(1);
+                                app.settings_selected_pool = (app.settings_selected_pool as isize
+                                    + delta)
+                                    .clamp(0, max as isize)
+                                    as usize;
+                            }
                         },
                         Action::SettingsSwitchPane(pane) => {
                             app.settings_pane = pane;
                         }
+                        Action::SettingsTogglePool => {
+                            let pair = app.providers.get(app.settings_selected_provider).map(|p| {
+                                let pid = p.id.clone();
+                                let mname = p
+                                    .models
+                                    .get(app.settings_selected_model)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                (pid, mname)
+                            });
+                            if let Some((provider_id, model_name)) = pair {
+                                let was_in = app.is_in_pool(&provider_id, &model_name);
+                                app.toggle_pool_entry(&provider_id, &model_name);
+                                // Persist eagerly — the user can quit the
+                                // TUI right after this toggle (without
+                                // pressing Enter on the modal) and the
+                                // change must still be on disk.
+                                save_settings(&app.provider_configs, &app.pool_entries);
+                                let label = app
+                                    .providers
+                                    .iter()
+                                    .find(|p| p.id == provider_id)
+                                    .map(|p| p.display_name.clone())
+                                    .unwrap_or_else(|| provider_id.clone());
+                                if was_in {
+                                    app.toast
+                                        .info(format!("Removed {} / {}", label, model_name));
+                                } else {
+                                    app.toast.info(format!("Added {} / {}", label, model_name));
+                                }
+                            }
+                        }
+                        Action::SettingsRemovePool => {
+                            let idx = app.settings_selected_pool;
+                            if idx < app.pool_entries.len() {
+                                let removed = app.pool_entries[idx].clone();
+                                app.remove_pool_entry(idx);
+                                save_settings(&app.provider_configs, &app.pool_entries);
+                                let max = app.pool_entries.len().saturating_sub(1);
+                                if app.settings_selected_pool > max {
+                                    app.settings_selected_pool = max;
+                                }
+                                let label = app
+                                    .providers
+                                    .iter()
+                                    .find(|p| p.id == removed.provider_id)
+                                    .map(|p| p.display_name.clone())
+                                    .unwrap_or_else(|| removed.provider_id.clone());
+                                app.toast
+                                    .info(format!("Removed {} / {}", label, removed.model));
+                            }
+                        }
                         Action::SettingsConfirm => {
-                            let provider_idx = app.settings_selected_provider;
-                            let model_idx = app.settings_selected_model;
-
-                            let new_provider =
-                                app.providers.get(provider_idx).map(|p| p.name.clone());
-                            let new_model = app
-                                .providers
-                                .get(provider_idx)
-                                .and_then(|p| p.models.get(model_idx).cloned());
-
-                            if let (Some(new_provider), Some(new_model)) = (new_provider, new_model)
-                                && (new_provider != app.current_provider
-                                    || new_model != app.current_model)
-                                && let Some(pool) = build_pool(&new_provider, &new_model)
-                            {
-                                let svc_arc = Arc::new(app.svc.clone());
-                                let ctx: Arc<dyn agentik_core::context::AgentContext> =
-                                    match app.agent_kind {
-                                        AgentKind::Compose => Arc::new(KmsContext::new(svc_arc)),
-                                        AgentKind::Knowledge => {
-                                            Arc::new(KnowledgeContext::new(svc_arc))
-                                        }
-                                    };
-
-                                let new_agent = agentik_core::Agent::builder()
-                                    .with_model_pool(Arc::new(pool))
-                                    .with_context(ctx)
-                                    .build()
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-
-                                app.agents.insert(
-                                    app.agent_kind,
-                                    Arc::new(tokio::sync::Mutex::new(new_agent)),
-                                );
-
-                                app.current_provider = new_provider.clone();
-                                app.current_model = new_model.clone();
-                                save_settings(&new_provider, &new_model);
-                                app.toast.success(format!(
-                                    "Switched to {} / {}",
-                                    app.current_provider, app.current_model
-                                ));
+                            // Pool entries and providers are persisted
+                            // eagerly on every individual mutation, so
+                            // Confirm's only remaining job is to push
+                            // the assembled pool into the live agents.
+                            if app.pool_entries.is_empty() {
+                                app.toast
+                                    .warning("Pool is empty \u{2014} no changes applied");
+                            } else {
+                                let new_entries = app.pool_entries.clone();
+                                if let Some(pool) = crate::settings::build_pool_from_entries(
+                                    &new_entries,
+                                    &app.providers,
+                                ) {
+                                    let pool_arc = std::sync::Arc::new(pool);
+                                    agent::rebuild_all_agents(app, &pool_arc).await;
+                                    app.toast.success(format!(
+                                        "Pool updated: {} model(s)",
+                                        new_entries.len()
+                                    ));
+                                } else {
+                                    app.toast
+                                        .error("Failed to build model pool from selections");
+                                }
                             }
                             app.settings_modal_open = false;
                         }
+                        Action::SettingsNewProvider => {
+                            if app.settings_pane == SettingsPane::Provider {
+                                app.new_provider_form = Some(crate::state::NewProviderForm::new());
+                            } else {
+                                app.toast
+                                    .info("Switch to the Providers pane to add a new one");
+                            }
+                        }
+                        Action::SettingsDeleteProvider => {
+                            if app.settings_pane == SettingsPane::Provider {
+                                let id = app
+                                    .providers
+                                    .get(app.settings_selected_provider)
+                                    .map(|p| p.id.clone());
+                                if let Some(id) = id {
+                                    if app.remove_custom_provider(&id) {
+                                        // `remove_custom_provider` also
+                                        // drops the provider's pool
+                                        // entries; persist immediately
+                                        // so the on-disk file is in sync.
+                                        save_settings(&app.provider_configs, &app.pool_entries);
+                                        let max = app.providers.len().saturating_sub(1);
+                                        if app.settings_selected_provider > max {
+                                            app.settings_selected_provider = max;
+                                        }
+                                        app.toast.info("Custom provider removed");
+                                    } else {
+                                        app.toast.warning("Built-in providers cannot be removed");
+                                    }
+                                }
+                            }
+                        }
+                        Action::SettingsFormCycleField(delta) => {
+                            if let Some(form) = app.new_provider_form.as_mut() {
+                                form.active_field = if delta > 0 {
+                                    (form.active_field + 1) % 4
+                                } else {
+                                    (form.active_field + 3) % 4
+                                };
+                            }
+                        }
+                        Action::SettingsFormCycleType(delta) => {
+                            if let Some(form) = app.new_provider_form.as_mut() {
+                                if form.active_field == 0 {
+                                    let n = crate::settings::BUILTIN_PROVIDER_TYPES.len();
+                                    if delta > 0 {
+                                        form.type_idx = (form.type_idx + 1) % n;
+                                    } else {
+                                        form.type_idx = (form.type_idx + n - 1) % n;
+                                    }
+                                    // Reset URL preset to the first non-custom
+                                    // option for the new provider type.
+                                    form.url_preset_idx = form
+                                        .presets()
+                                        .iter()
+                                        .position(|p| !p.is_custom)
+                                        .unwrap_or(0);
+                                    form.url_custom.clear();
+                                    form.error = None;
+                                } else if form.active_field == 3 {
+                                    // Cycling the URL preset.
+                                    let n = form.presets().len().max(1);
+                                    if delta > 0 {
+                                        form.url_preset_idx = (form.url_preset_idx + 1) % n;
+                                    } else {
+                                        form.url_preset_idx = (form.url_preset_idx + n - 1) % n;
+                                    }
+                                    form.error = None;
+                                }
+                            }
+                        }
+                        Action::SettingsFormType(c) => {
+                            if let Some(form) = app.new_provider_form.as_mut() {
+                                form.error = None;
+                                match form.active_field {
+                                    1 => form.display_name.push(c),
+                                    2 => form.api_key.push(c),
+                                    3 if form.url_is_custom() => form.url_custom.push(c),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Action::SettingsFormBackspace => {
+                            if let Some(form) = app.new_provider_form.as_mut() {
+                                match form.active_field {
+                                    1 => {
+                                        form.display_name.pop();
+                                    }
+                                    2 => {
+                                        form.api_key.pop();
+                                    }
+                                    3 if form.url_is_custom() => {
+                                        form.url_custom.pop();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Action::SettingsFormSubmit => {
+                            if let Some(form) = app.new_provider_form.take() {
+                                let ptype = crate::settings::BUILTIN_PROVIDER_TYPES[form.type_idx];
+                                let display_name = form.display_name.trim().to_string();
+                                let api_key = form.api_key.trim().to_string();
+                                let base_url = form.resolved_url();
+
+                                if display_name.is_empty() {
+                                    app.toast.warning("Display name cannot be empty");
+                                    app.new_provider_form = Some(form);
+                                } else if api_key.is_empty() {
+                                    app.toast.warning("API key cannot be empty");
+                                    app.new_provider_form = Some(form);
+                                } else if base_url.is_empty() && form.url_is_custom() {
+                                    app.toast.warning("Custom URL cannot be empty");
+                                    app.new_provider_form = Some(form);
+                                } else {
+                                    let new_id = app.add_custom_provider(
+                                        display_name.clone(),
+                                        ptype.to_string(),
+                                        api_key,
+                                        base_url,
+                                    );
+                                    // New provider is durable immediately —
+                                    // if the user quits before reopening
+                                    // settings, it still has to come back.
+                                    save_settings(&app.provider_configs, &app.pool_entries);
+                                    app.toast.success(format!(
+                                        "Added custom provider: {} ({})",
+                                        display_name, ptype
+                                    ));
+                                    // Select the newly added provider.
+                                    if let Some(pos) =
+                                        app.providers.iter().position(|p| p.id == new_id)
+                                    {
+                                        app.settings_selected_provider = pos;
+                                    }
+                                }
+                            }
+                        }
+                        Action::SettingsFormCancel => {
+                            app.new_provider_form = None;
+                        }
                         Action::None => {}
                     },
+                    Event::Paste(s) if app.new_provider_form.is_some() => {
+                        // Paste inside the new-provider form: drop the
+                        // full text into the active field. We do not
+                        // summarize here — API keys and URLs are
+                        // single-line by nature, so a paste shouldn't
+                        // turn into a `[Pasted ~N lines]` placeholder.
+                        if let Some(form) = app.new_provider_form.as_mut() {
+                            form.error = None;
+                            match form.active_field {
+                                1 => form.display_name.push_str(&s),
+                                2 => form.api_key.push_str(&s),
+                                3 if form.url_is_custom() => form.url_custom.push_str(&s),
+                                _ => {}
+                            }
+                        }
+                    }
                     Event::Paste(s)
                         if app.focused == Panel::Agent
                             && app.agent_input_active
                             && !app.agent_running =>
                     {
-                        app.agent_input.push_str(&s);
+                        if let Some(placeholder) = summarize_paste(&s) {
+                            // Long paste: store full text in a side-channel
+                            // and push a compact placeholder into the input
+                            // field. The placeholder is substituted back to
+                            // the full text at submission time.
+                            app.agent_pastes.push((placeholder.clone(), s));
+                            app.agent_input.push_str(&placeholder);
+                        } else {
+                            app.agent_input.push_str(&s);
+                        }
                     }
                     _ => {}
                 }
@@ -469,70 +552,4 @@ pub async fn run_app(
         }
     }
     Ok(())
-}
-
-fn build_pool(provider: &str, model: &str) -> Option<agentik_sdk::model::model_pool::ModelPool> {
-    use agentik_sdk::model::model_pool::ModelPool;
-    use agentik_sdk::provider::LlmProvider;
-
-    match provider {
-        "mimo" => {
-            let mimo_provider = agentik_sdk::provider::mimo::MimoProvider::new(None, None, None);
-            let m = mimo_provider.get_model(model).ok()?;
-            let mut pool = ModelPool::new();
-            pool.add_model(m);
-            Some(pool)
-        }
-        "minimax" => {
-            let minimax_provider =
-                agentik_sdk::provider::minimax::MinimaxProvider::new(None, None, None);
-            let m = minimax_provider.get_model(model).ok()?;
-            let mut pool = ModelPool::new();
-            pool.add_model(m);
-            Some(pool)
-        }
-        _ => None,
-    }
-}
-
-fn spawn_agent_task(app: &mut App, user_input: String) {
-    if app.agent_running {
-        return;
-    }
-
-    let kind = app.agent_kind;
-    app.agent_messages_mut().push(ChatMessage::User {
-        text: user_input.clone(),
-    });
-    app.agent_messages_mut().push(ChatMessage::Divider);
-    app.agent_running = true;
-    // Submitting a new task is the canonical signal to follow the
-    // tail; the user has explicitly opted in to seeing the
-    // conversation unfold.
-    app.agent_auto_follow = true;
-    app.agent_scroll = u16::MAX;
-
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.agent_event_rx = Some(rx);
-
-    let agent_arc = app.agents.get(&kind).cloned().unwrap();
-
-    tokio::spawn(async move {
-        let mut agent = agent_arc.lock().await;
-        agent.event_tx = Some(tx.clone());
-
-        if let Err(e) = agent.inject_message(vec![ContentBlock::Text { text: user_input }]) {
-            let _ = tx.send(AgentUiEvent::Error(format!("Inject error: {}", e)));
-            let _ = tx.send(AgentUiEvent::Done);
-            agent.event_tx = None;
-            return;
-        }
-
-        if let Err(e) = agent.start().await {
-            let _ = tx.send(AgentUiEvent::Error(format!("Agent failed: {}", e)));
-        }
-
-        let _ = tx.send(AgentUiEvent::Done);
-        agent.event_tx = None;
-    });
 }
