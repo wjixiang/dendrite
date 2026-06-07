@@ -26,6 +26,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     if app.settings_modal_open {
         components::render_settings_modal(f, app, &theme);
+        if app.new_provider_form.is_some() {
+            components::render_new_provider_form(f, app, &theme);
+        }
     }
 
     app.toast.tick();

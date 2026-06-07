@@ -2,6 +2,7 @@ mod chat;
 mod components;
 mod input;
 mod layout;
+mod parallel_panel;
 mod settings;
 mod state;
 mod styles;
@@ -9,24 +10,22 @@ mod theme;
 mod tree;
 mod widgets;
 
-use std::fs;
 use std::io;
 use std::sync::Arc;
 
 use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-    event::{DisableBracketedPaste, EnableBracketedPaste},
 };
 use agent_compose::KmsContext;
+use agent_compose::ParallelComposeContext;
 use agent_knowledge::KnowledgeContext;
 use kms::KmsService;
-use agentik_sdk::model::model_pool::ModelPool;
-use agentik_sdk::provider::LlmProvider;
-use agentik_sdk::provider::mimo::MimoProvider;
 use ratatui::Terminal;
 
 use crate::input::run_app;
+use crate::settings::{build_pool_from_entries, load_settings, save_settings, ProviderConfig};
 use crate::state::{AgentKind, App, SettingsProvider};
 use crate::theme::Theme;
 
@@ -35,9 +34,19 @@ use std::collections::HashMap;
 type CrosstermBackend = ratatui::backend::CrosstermBackend<std::io::Stdout>;
 
 fn init_logging() {
-    use std::fs::{create_dir_all, File};
-    let _ = create_dir_all("data");
-    let log_file = File::create("data/tui.log").expect("failed to create log file");
+    use std::fs::{OpenOptions, create_dir_all};
+    let log_path = log_path();
+    if let Some(parent) = log_path.parent() {
+        let _ = create_dir_all(parent);
+    }
+    // Append mode so a previous run's logs survive a restart — invaluable
+    // for "the app crashed last time, where?" postmortem. The file is
+    // created on first run.
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .unwrap_or_else(|e| panic!("failed to open log file {:?}: {}", log_path, e));
     tracing_subscriber::fmt()
         .with_writer(log_file)
         .with_env_filter(
@@ -45,143 +54,130 @@ fn init_logging() {
                 .add_directive(tracing::Level::DEBUG.into()),
         )
         .init();
+    // First entry, so the user can `grep tui.log | head` and immediately
+    // see where the log went on this run.
+    tracing::info!("logging to {:?}", log_path);
 }
 
-const SETTINGS_FILE: &str = "data/settings.json";
-
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct Settings {
-    provider: String,
-    model: String,
-}
-
-fn load_settings() -> Settings {
-    match fs::read_to_string(SETTINGS_FILE) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-        Err(_) => Settings::default(),
+/// Resolve the log file path. `KMS_LOG_PATH` wins, then the XDG data
+/// directory (`$XDG_DATA_HOME/kms/tui.log` or
+/// `$HOME/.local/share/kms/tui.log`). Falls back to the legacy
+/// CWD-relative `data/tui.log` only when neither is available, so the
+/// TUI never crashes on startup just because $HOME is unset (e.g.
+/// inside an unprivileged systemd unit).
+fn log_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("KMS_LOG_PATH") {
+        return std::path::PathBuf::from(p);
     }
-}
-
-fn save_settings(provider: &str, model: &str) {
-    let settings = Settings {
-        provider: provider.to_string(),
-        model: model.to_string(),
-    };
-    if let Ok(json) = serde_json::to_string_pretty(&settings) {
-        let _ = fs::write(SETTINGS_FILE, json);
+    if let Some(data_dir) = std::env::var_os("XDG_DATA_HOME") {
+        let mut p = std::path::PathBuf::from(data_dir);
+        p.push("kms");
+        return p.join("tui.log");
     }
-}
-
-async fn discover_providers() -> Vec<SettingsProvider> {
-    let mut providers = Vec::new();
-
-    // Mimo - always available (panics if MIMO_API_KEY not set)
-    let _mimo_provider = MimoProvider::new(None, None, None);
-    let mimo_models = vec![
-        "mimo-v2.5-pro".to_string(),
-        "mimo-v2-pro".to_string(),
-        "mimo-v2.5".to_string(),
-        "mimo-v2-omni".to_string(),
-        "mimo-v2-flash".to_string(),
-    ];
-    providers.push(SettingsProvider {
-        name: "mimo".to_string(),
-        models: mimo_models,
-    });
-
-    // MiniMax
-    if std::env::var("MINIMAX_API_KEY").is_ok() && std::env::var("MINIMAX_BASE_URL").is_ok() {
-        let minimax_provider = agentik_sdk::provider::minimax::MinimaxProvider::new(None, None, None);
-        let minimax_models = minimax_provider
-            .list_models()
-            .await
-            .map(|ms| ms.into_iter().map(|m| m.model_info.model_name).collect())
-            .unwrap_or_else(|_| vec!["MiniMax-M2.7".to_string()]);
-        providers.push(SettingsProvider {
-            name: "minimax".to_string(),
-            models: minimax_models,
-        });
+    if let Some(home) = std::env::var_os("HOME") {
+        let mut p = std::path::PathBuf::from(home);
+        p.push(".local");
+        p.push("share");
+        p.push("kms");
+        return p.join("tui.log");
     }
-
-    providers
-}
-
-fn build_pool(provider: &str, model: &str) -> Option<ModelPool> {
-    use agentik_sdk::provider::LlmProvider;
-    match provider {
-        "mimo" => {
-            let mimo_provider = MimoProvider::new(None, None, None);
-            let m = mimo_provider.get_model(model).ok()?;
-            let mut pool = ModelPool::new();
-            pool.add_model(m);
-            Some(pool)
-        }
-        "minimax" => {
-            let minimax_provider = agentik_sdk::provider::minimax::MinimaxProvider::new(None, None, None);
-            let m = minimax_provider.get_model(model).ok()?;
-            let mut pool = ModelPool::new();
-            pool.add_model(m);
-            Some(pool)
-        }
-        _ => None,
-    }
+    std::path::PathBuf::from("data/tui.log")
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    dotenvy::dotenv_override().unwrap();
-
+    // Note: we deliberately do NOT load .env files and do NOT read
+    // MIMO_API_KEY / MINIMAX_* / SENSENOVA_* from the environment. All
+    // provider configuration lives in `data/settings.json` and is
+    // managed through the in-TUI settings form.
     let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
     let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
 
-    let providers = discover_providers().await;
-    if providers.is_empty() {
-        eprintln!("Error: No LLM providers available. Set MIMO_API_KEY or MINIMAX_API_KEY.");
-        std::process::exit(1);
+    // Load all providers from settings.json. No env-var discovery.
+    let raw_settings = load_settings();
+    let provider_configs: Vec<ProviderConfig> = raw_settings.providers;
+
+    // Refresh each provider's model list from the SDK (e.g. minimax
+    // exposes `/v1/models`). The fresh list is what the in-memory
+    // SettingsProvider carries; on-disk config keeps the credentials
+    // but the model list is treated as ephemeral.
+    let mut providers: Vec<SettingsProvider> = Vec::with_capacity(provider_configs.len());
+    for cp in &provider_configs {
+        let models = crate::settings::refresh_models(cp).await;
+        providers.push(SettingsProvider {
+            id: cp.id.clone(),
+            display_name: cp.display_name.clone(),
+            provider_type: cp.provider_type.clone(),
+            api_key: cp.api_key.clone(),
+            base_url: cp.base_url.clone(),
+            models,
+            is_custom: true,
+        });
     }
 
-    let settings = load_settings();
+    // Validate persisted pool entries against the live provider list.
+    // If a provider or model disappeared, drop the stale entry.
+    let pool_entries = raw_settings
+        .pool
+        .into_iter()
+        .filter(|e| {
+            providers
+                .iter()
+                .any(|p| p.id == e.provider_id && p.models.contains(&e.model))
+        })
+        .collect::<Vec<_>>();
 
-    let current_provider = if providers.iter().any(|p| p.name == settings.provider) {
-        settings.provider.clone()
-    } else {
-        providers[0].name.clone()
-    };
-
-    let provider_idx = providers.iter().position(|p| p.name == current_provider).unwrap_or(0);
-    let current_model = if providers[provider_idx].models.contains(&settings.model) {
-        settings.model.clone()
-    } else {
-        providers[provider_idx].models[0].clone()
-    };
-
-    let pool = build_pool(&current_provider, &current_model)
-        .expect("Failed to build model pool for selected provider/model");
-    let pool_arc = Arc::new(pool);
-
-    let compose_agent = agentik_core::Agent::builder()
-        .with_model_pool(pool_arc.clone())
-        .with_context(Arc::new(KmsContext::new(Arc::new(svc.clone()))))
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let knowledge_agent = agentik_core::Agent::builder()
-        .with_model_pool(pool_arc.clone())
-        .with_context(Arc::new(KnowledgeContext::new(Arc::new(svc.clone()))))
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
-
+    // Build agents only when we have at least one working model.
+    // Otherwise the TUI starts in "needs configuration" mode.
     let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>> =
         HashMap::new();
-    agents.insert(AgentKind::Compose, Arc::new(tokio::sync::Mutex::new(compose_agent)));
-    agents.insert(
-        AgentKind::Knowledge,
-        Arc::new(tokio::sync::Mutex::new(knowledge_agent)),
-    );
+    let (parallel_progress_tx, parallel_progress_rx) =
+        tokio::sync::mpsc::unbounded_channel::<dendrite_tools::parallel_progress::ParallelProgress>(
+        );
+
+    if !providers.is_empty()
+        && !pool_entries.is_empty()
+        && let Some(pool) = build_pool_from_entries(&pool_entries, &providers)
+    {
+        let pool_arc = Arc::new(pool);
+
+        let compose_agent = agentik_core::Agent::builder()
+            .with_model_pool(pool_arc.clone())
+            .with_context(Arc::new(KmsContext::new(Arc::new(svc.clone()))))
+            .build()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let knowledge_agent = agentik_core::Agent::builder()
+            .with_model_pool(pool_arc.clone())
+            .with_context(Arc::new(KnowledgeContext::new(Arc::new(svc.clone()))))
+            .build()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let parallel_agent = agentik_core::Agent::builder()
+            .with_model_pool(pool_arc.clone())
+            .with_context(Arc::new(ParallelComposeContext::new(
+                Arc::new(svc.clone()),
+                pool_arc.clone(),
+                parallel_progress_tx.clone(),
+            )))
+            .build()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        agents.insert(AgentKind::Compose, Arc::new(tokio::sync::Mutex::new(compose_agent)));
+        agents.insert(
+            AgentKind::Knowledge,
+            Arc::new(tokio::sync::Mutex::new(knowledge_agent)),
+        );
+        agents.insert(
+            AgentKind::Parallel,
+            Arc::new(tokio::sync::Mutex::new(parallel_agent)),
+        );
+    }
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
@@ -192,15 +188,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         svc,
         agents,
         providers,
-        current_provider.clone(),
-        current_model.clone(),
+        provider_configs,
+        pool_entries.clone(),
+        parallel_progress_tx,
+        parallel_progress_rx,
     );
 
-    save_settings(&current_provider, &current_model);
+    save_settings(&app.provider_configs, &app.pool_entries);
 
     // Initial load: knowledge tree
     let root_children = app.svc.get_children(None).await?;
-    let mut stack: Vec<(kms::Index, usize)> = root_children.into_iter().map(|c| (c, 0)).collect();
+    let mut stack: Vec<(kms::Index, usize)> =
+        root_children.into_iter().map(|c| (c, 0)).collect();
 
     while let Some((node, depth)) = stack.pop() {
         let title = node.title.as_deref().unwrap_or("(unnamed)");

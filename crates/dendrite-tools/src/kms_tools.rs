@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use agentik_core::tools::ToolRegistration;
+use agentik_sdk::model::model_pool::ModelPool;
 
 mod kms_add_nomenclature;
 mod kms_create_entity;
@@ -21,8 +22,10 @@ mod kms_get_entity_knowledge;
 mod kms_get_knowledge;
 mod kms_link_orphans;
 mod kms_list_entities;
+mod kms_merge_subtree;
 mod kms_move_index;
 mod kms_navigate;
+mod kms_parallel_dispatch;
 mod kms_rename_knowledge;
 mod kms_reorganize_children;
 mod kms_search_entity;
@@ -55,7 +58,8 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
         kms_update_knowledge::registration(svc.clone()),
         kms_rename_knowledge::registration(svc.clone()),
         kms_delete_knowledge::registration(svc.clone()),
-        kms_delete_index::registration(svc),
+        kms_delete_index::registration(svc.clone()),
+        kms_merge_subtree::registration(svc),
     ]
 }
 
@@ -72,3 +76,33 @@ pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration
         kms_search_subtree::registration(svc),
     ]
 }
+
+/// Build the tool set for the parallel compose agent.
+///
+/// Includes every regular KMS tool plus:
+/// - `kms_parallel_dispatch` (the fan-out orchestrator)
+/// - `kms_merge_subtree` (for staged merges the agent wants to do by hand)
+///
+/// `sub_context_factory` is invoked once per spawned sub-agent to
+/// construct its `AgentContext` from a dedicated `KmsService` whose
+/// pointer is pinned to the sub-agent's staging area. This indirection
+/// lets the caller (typically the `agent-compose` crate) decide
+/// exactly what prompt/tools the sub-agents get.
+pub fn parallel_registrations(
+    svc: Arc<kms::KmsService>,
+    pool: Arc<ModelPool>,
+    sub_context_factory: Arc<
+        dyn Fn(Arc<kms::KmsService>) -> Arc<dyn agentik_core::context::AgentContext> + Send + Sync,
+    >,
+    progress_tx: crate::parallel_progress::ParallelProgressTx,
+) -> Vec<ToolRegistration> {
+    let mut tools = registrations(svc.clone());
+    tools.push(kms_parallel_dispatch::registration(
+        svc,
+        pool,
+        sub_context_factory,
+        progress_tx,
+    ));
+    tools
+}
+
