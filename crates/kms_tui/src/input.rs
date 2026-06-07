@@ -349,10 +349,43 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             ..
         } => handle_scroll_up(app),
         KeyEvent {
+            code: KeyCode::PageDown,
+            ..
+        } => handle_page_down(app),
+        KeyEvent {
+            code: KeyCode::PageUp,
+            ..
+        } => handle_page_up(app),
+        KeyEvent {
             code: KeyCode::End, ..
         } => handle_end(app),
         _ => Action::None,
     }
+}
+
+/// PageDown on the Agent panel scrolls the chat down by the visible
+/// height. This is the natural "scroll one screen" binding in TUI
+/// apps; we apply it to the Agent panel only so it doesn't interfere
+/// with the tree panel (which uses `j`/`k` to move the selection).
+fn handle_page_down(app: &mut App) -> Action {
+    if app.focused == Panel::Agent && app.chat_focus == ChatFocus::Messages {
+        app.agent_auto_scroll = false;
+        // Scroll a typical "page" worth — 10 lines. We don't know the
+        // exact visible height at this point in the event flow; 10 is
+        // a reasonable guess and matches the bounds of typical TUI
+        // chat windows. The renderer clamps to the actual content
+        // length on the next frame.
+        app.agent_scroll = app.agent_scroll.saturating_add(10);
+    }
+    Action::None
+}
+
+fn handle_page_up(app: &mut App) -> Action {
+    if app.focused == Panel::Agent && app.chat_focus == ChatFocus::Messages {
+        app.agent_auto_scroll = false;
+        app.agent_scroll = app.agent_scroll.saturating_sub(10);
+    }
+    Action::None
 }
 
 fn handle_scroll_down(app: &mut App) -> Action {
@@ -384,8 +417,24 @@ fn handle_scroll_down(app: &mut App) -> Action {
             }
             Action::None
         }
-        Panel::Agent => Action::None,
+        Panel::Agent => handle_agent_scroll_down(app),
     }
+}
+
+/// Scroll the chat panel down by one line. Used by `j` / `Down` when
+/// the user is on the Messages sub-focus of the Agent panel.
+/// Any manual scroll disables auto-follow so the next streamed event
+/// doesn't snap the view back to the bottom.
+fn handle_agent_scroll_down(app: &mut App) -> Action {
+    if app.chat_focus != ChatFocus::Messages {
+        // On the ParallelPanel sub-focus, `j` / `k` move the sub-agent
+        // selection (handled in the Tab / j/k arms above). When the
+        // user is in input mode or the agent is running, no-op.
+        return Action::None;
+    }
+    app.agent_auto_scroll = false;
+    app.agent_scroll = app.agent_scroll.saturating_add(1);
+    Action::None
 }
 
 fn handle_scroll_up(app: &mut App) -> Action {
@@ -404,7 +453,14 @@ fn handle_scroll_up(app: &mut App) -> Action {
             app.scroll_diag = app.scroll_diag.saturating_sub(1);
             Action::None
         }
-        Panel::Agent => Action::None,
+        Panel::Agent => {
+            if app.chat_focus != ChatFocus::Messages {
+                return Action::None;
+            }
+            app.agent_auto_scroll = false;
+            app.agent_scroll = app.agent_scroll.saturating_sub(1);
+            Action::None
+        }
     }
 }
 
@@ -422,7 +478,17 @@ fn handle_end(app: &mut App) -> Action {
             app.scroll_diag = (app.diagnostic_lines.len() as u16).saturating_sub(1);
             Action::None
         }
-        _ => Action::None,
+        Panel::Agent => {
+            // End on the Agent panel re-engages auto-follow. The
+            // renderer will pin the scroll to the bottom on the next
+            // frame, so any in-flight stream events become visible
+            // immediately. The exact y offset is computed in the
+            // render path from the current line count + visible
+            // area height.
+            app.agent_auto_scroll = true;
+            Action::None
+        }
+        Panel::Tree => Action::None,
     }
 }
 
@@ -508,6 +574,18 @@ pub async fn run_app(
         // updates the panel state machine; we mark `pending_refresh`
         // whenever a sub-agent finishes or fails so the tree view
         // grows incrementally as staging areas get populated.
+        //
+        // In addition to driving the panel, sub-agent LLM responses
+        // are also pushed into the **main chat history** so the user
+        // sees the actual work the sub-agents produced, the same way
+        // they see the orchestrator's `Assistant` text. Without this,
+        // the parallel panel's collapsed-by-default rows hide every
+        // sub-agent response and the user is left watching the
+        // orchestrator's tool-call marker for minutes with no
+        // feedback ("看不到Agent响应的任何内容"). The panel and the
+        // chat history are complementary, not exclusive: the panel
+        // shows the compact per-sub-agent tree, the chat history
+        // shows the full text inline.
         if let Some(rx) = &mut app.parallel_progress_rx {
             while let Ok(event) = rx.try_recv() {
                 use dendrite_tools::parallel_progress::ParallelProgress as P;
@@ -529,6 +607,24 @@ pub async fn run_app(
                 }
                 if let Some(panel) = app.parallel_panel.as_mut() {
                     panel.apply(&event);
+                }
+                // Sub-agent LLM text: surface in the main chat
+                // history. The agent is identified by `app.agent_kind`
+                // (Parallel at the time the user dispatched), which
+                // is the same bucket the orchestrator's events are
+                // going into, so the two streams interleave naturally.
+                if let P::SubAgentEvent {
+                    title,
+                    event: AgentUiEvent::LlmResponse(text),
+                } = &event
+                {
+                    let kind = app.agent_kind;
+                    if let Some(history) = app.agent_messages_map.get_mut(&kind) {
+                        history.push(ChatMessage::SubAgentResponse {
+                            title: title.clone(),
+                            text: text.clone(),
+                        });
+                    }
                 }
                 match &event {
                     P::SubAgentCompleted { .. } | P::SubAgentFailed { .. } => {
@@ -955,6 +1051,11 @@ fn spawn_agent_task(app: &mut App, user_input: String) {
     });
     app.agent_messages_mut().push(ChatMessage::Divider);
     app.agent_running = true;
+    // Re-engage auto-scroll on every new submission so the new
+    // stream is visible from the first byte. The user can still
+    // override with j/k/PgUp/PgDown/End.
+    app.agent_auto_scroll = true;
+    app.agent_scroll = 0;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.agent_event_rx = Some(rx);

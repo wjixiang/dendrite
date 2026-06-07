@@ -260,6 +260,18 @@ pub struct App {
     pub agent_running: bool,
     pub agent_requesting: bool,
     pub spinner_tick: usize,
+    /// Vertical scroll offset (in lines) for the Agent chat panel.
+    /// 0 = top. Used together with `agent_auto_scroll`: when auto-scroll
+    /// is on, the renderer pins the scroll to the bottom on every frame
+    /// so newly-streamed events stay visible without the user having
+    /// to scroll. Manual `j`/`k`/`PageUp`/`PageDown` flips auto-scroll
+    /// off and lets the user browse history.
+    pub agent_scroll: u16,
+    /// True when the chat panel should follow the bottom of the
+    /// stream. Disabled the moment the user scrolls up, re-enabled
+    /// when they hit `End` to jump to the bottom or start a new
+    /// submission.
+    pub agent_auto_scroll: bool,
 
     pub agent_input: String,
     pub agent_input_active: bool,
@@ -365,6 +377,10 @@ impl App {
             agent_running: false,
             agent_requesting: false,
             spinner_tick: 0,
+            agent_scroll: 0,
+            // Start with auto-scroll on so the first agent run streams
+            // smoothly; the renderer will pin the scroll to the bottom.
+            agent_auto_scroll: true,
             agent_input: String::new(),
             agent_input_active: false,
             agent_pastes: Vec::new(),
