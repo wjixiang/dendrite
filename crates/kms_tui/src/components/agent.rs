@@ -9,7 +9,9 @@ use ratatui::{
 use crate::state::{App, Panel};
 use crate::theme::Theme;
 
-const SPINNER_FRAMES: &[&str] = &["\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}"];
+const SPINNER_FRAMES: &[&str] = &[
+    "\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+];
 
 /// Count the number of **post-wrap** visual rows a list of source
 /// `Line`s would occupy when wrapped to `inner_width` columns.
@@ -64,7 +66,11 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             .unwrap_or_else(|| e.provider_id.clone());
         format!(" Agent [{}] ({}/{}) ", kind_label, prov, e.model)
     } else {
-        format!(" Agent [{}] ({} models) ", kind_label, app.pool_entries.len())
+        format!(
+            " Agent [{}] ({} models) ",
+            kind_label,
+            app.pool_entries.len()
+        )
     };
 
     let rendered_lines: Vec<Line<'static>> = if app.providers.is_empty() {
@@ -72,7 +78,9 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         vec![
             Line::from(Span::styled(
                 "  No LLM providers configured.",
-                Style::default().fg(theme.warning).add_modifier(ratatui::style::Modifier::BOLD),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -187,11 +195,15 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         )])
     } else if app.agent_running {
         let spinner_char = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+        let usage_suffix = match app.agent_usage_tokens {
+            Some(tokens) => format!(" ({} tokens)", tokens),
+            None => String::new(),
+        };
         Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(spinner_char.to_string(), Style::default().fg(theme.spinner)),
             Span::styled(
-                format!(" Agent [{}] running... ", kind_label),
+                format!(" Agent [{}] running{} ", kind_label, usage_suffix),
                 Style::default().fg(theme.spinner),
             ),
         ])
@@ -203,10 +215,7 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 format!("  (Enter to type) [{}] ", kind_label),
                 Style::default().fg(theme.text_muted),
             ),
-            Span::styled(
-                "[a] switch",
-                Style::default().fg(theme.text_muted),
-            ),
+            Span::styled("[a] switch", Style::default().fg(theme.text_muted)),
         ])
     };
 
@@ -274,11 +283,7 @@ mod wrap_tests {
         // Mix of one short, one empty, one wrapping. The total must
         // be the sum of each line's wrapped count, not the line
         // count.
-        let lines = vec![
-            Line::from("ok"),
-            Line::from(""),
-            Line::from("z".repeat(25)),
-        ];
+        let lines = vec![Line::from("ok"), Line::from(""), Line::from("z".repeat(25))];
         // 1 (ok) + 1 (empty) + ceil(25/10) = 1+1+3 = 5
         assert_eq!(wrapped_line_count(&lines, 10), 5);
     }

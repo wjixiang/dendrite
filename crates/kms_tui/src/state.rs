@@ -260,6 +260,10 @@ pub struct App {
     pub agent_running: bool,
     pub agent_requesting: bool,
     pub spinner_tick: usize,
+    /// Latest output-token count reported by `UsageUpdate` during
+    /// streaming. Displayed in the status bar so the user sees how
+    /// many tokens the LLM has generated so far.
+    pub agent_usage_tokens: Option<u64>,
     /// Vertical scroll offset (in lines) for the Agent chat panel.
     /// 0 = top. Used together with `agent_auto_scroll`: when auto-scroll
     /// is on, the renderer pins the scroll to the bottom on every frame
@@ -377,6 +381,7 @@ impl App {
             agent_running: false,
             agent_requesting: false,
             spinner_tick: 0,
+            agent_usage_tokens: None,
             agent_scroll: 0,
             // Start with auto-scroll on so the first agent run streams
             // smoothly; the renderer will pin the scroll to the bottom.

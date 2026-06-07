@@ -68,6 +68,12 @@ pub struct SubAgentPanelEntry {
     /// so the user can tell at a glance which sub-agents are doing
     /// real work vs. spinning.
     pub tool_call_count: usize,
+    /// Accumulated text from `TextDelta` events while the sub-agent
+    /// is streaming. Grows token-by-token, cleared when the
+    /// aggregated `LlmResponse` finalizes the response. Used by
+    /// `activity_hint()` to show a live preview of what the
+    /// sub-agent is generating.
+    pub streaming_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +175,25 @@ impl SubAgentPanelEntry {
         if matches!(self.status, SubAgentStatus::Failed { .. }) {
             return None;
         }
+        // If the sub-agent is currently streaming LLM text, show a
+        // live preview of the last ~60 characters so the user sees
+        // progress without expanding the row.
+        if let Some(text) = &self.streaming_text {
+            if !text.is_empty() {
+                let char_count = text.chars().count();
+                let snippet: String = if char_count > 60 {
+                    format!(
+                        "...{}",
+                        text.chars()
+                            .skip(char_count - 60)
+                            .collect::<String>()
+                    )
+                } else {
+                    text.clone()
+                };
+                return Some(snippet);
+            }
+        }
         // Walk events from newest to oldest; the latest meaningful
         // event wins. We skip "noise" events (empty LLM responses,
         // Thinking) so the user doesn't see "Thinking…" forever.
@@ -248,6 +273,7 @@ impl ParallelPanelState {
                         expanded: false,
                         completed_at: None,
                         tool_call_count: 0,
+                        streaming_text: None,
                     });
                 }
             }
@@ -262,6 +288,7 @@ impl ParallelPanelState {
                         expanded: false,
                         completed_at: None,
                         tool_call_count: 0,
+                        streaming_text: None,
                     });
                 }
             }
@@ -275,8 +302,31 @@ impl ParallelPanelState {
                     if matches!(event, agentik_types::AgentUiEvent::ToolCall { .. }) {
                         entry.tool_call_count += 1;
                     }
-                    let mapped = map_agent_event(event);
-                    entry.events.push(mapped);
+                    // Handle streaming deltas directly on the entry
+                    // rather than pushing them through map_agent_event().
+                    match event {
+                        agentik_types::AgentUiEvent::TextDelta(token) => {
+                            entry
+                                .streaming_text
+                                .get_or_insert_with(String::new)
+                                .push_str(token);
+                        }
+                        agentik_types::AgentUiEvent::LlmResponse(text) => {
+                            // Finalize: clear streaming text, push the
+                            // authoritative event to the log.
+                            entry.streaming_text = None;
+                            if !text.is_empty() {
+                                entry
+                                    .events
+                                    .push(SubAgentEvent::LlmResponse(text.clone()));
+                            }
+                        }
+                        _ => {
+                            if let Some(mapped) = map_agent_event(event) {
+                                entry.events.push(mapped);
+                            }
+                        }
+                    }
                     if entry.events.len() > MAX_EVENTS_PER_SUB_AGENT {
                         let drop_n = entry.events.len() - MAX_EVENTS_PER_SUB_AGENT;
                         entry.events.drain(0..drop_n);
@@ -372,26 +422,34 @@ impl ParallelPanelState {
 
 fn map_agent_event(
     event: &agentik_types::AgentUiEvent,
-) -> SubAgentEvent {
+) -> Option<SubAgentEvent> {
     use agentik_types::AgentUiEvent as E;
     match event {
-        E::LlmResponse(text) => SubAgentEvent::LlmResponse(text.clone()),
-        E::ToolCall { name, input } => SubAgentEvent::ToolCall {
+        E::LlmResponse(text) => Some(SubAgentEvent::LlmResponse(text.clone())),
+        E::ToolCall { name, input } => Some(SubAgentEvent::ToolCall {
             name: name.clone(),
             input: input.clone(),
-        },
-        E::ToolResult { ok, content } => SubAgentEvent::ToolResult {
+        }),
+        E::ToolResult { ok, content } => Some(SubAgentEvent::ToolResult {
             ok: *ok,
             content: content.clone(),
-        },
-        E::Error(msg) => SubAgentEvent::Error(msg.clone()),
+        }),
+        E::Error(msg) => Some(SubAgentEvent::Error(msg.clone())),
         // `Thinking` is intentionally dropped — it floods the chat
         // without adding diagnostic value at this layer.
-        E::Thinking(_) => SubAgentEvent::LlmResponse(String::new()),
+        E::Thinking(_) => None,
         // `Requesting` and `Done` are orchestrator-level signals and
-        // should not appear inside a sub-agent's event log; map them
-        // to a no-op text event so the type still has a variant.
-        E::Requesting | E::Done => SubAgentEvent::LlmResponse(String::new()),
+        // should not appear inside a sub-agent's event log.
+        E::Requesting | E::Done => None,
+        // Delta events are handled directly in `apply()`, not
+        // pushed to the events vec.
+        E::TextDelta(_)
+        | E::ThinkingDelta(_)
+        | E::UsageUpdate { .. }
+        | E::StreamStart { .. }
+        | E::ContentBlockStart { .. }
+        | E::ContentBlockStop { .. }
+        | E::StreamDelta { .. } => None,
     }
 }
 

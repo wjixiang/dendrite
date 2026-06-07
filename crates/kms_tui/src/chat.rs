@@ -1,5 +1,5 @@
-use ratatui::text::{Line, Span};
 use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::parallel_panel::{ParallelPanelState, SubAgentEvent};
@@ -18,19 +18,31 @@ const MAX_ARRAY_ITEMS: usize = 8;
 /// verbatim (no paste).
 const MAX_USER_MESSAGE_LINES: usize = 10;
 
-/// Upper bound for the user-message underline separator. Long enough to
-/// visually fill wide panels, short enough to never wrap on narrow
-/// ones. The actual wrap is delegated to `Paragraph::scroll` so this
-/// value is purely cosmetic.
-const USER_SEPARATOR_LIMIT: usize = 80;
-
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
-    User { text: String },
-    Assistant { text: String },
-    Thinking { text: String },
-    ToolCall { name: String, input: Value },
-    ToolResult { ok: bool, content: String },
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+        /// `true` while the LLM is still streaming tokens into this
+        /// message. The renderer appends a `█` block-cursor so the user
+        /// can see the text is still growing.
+        streaming: bool,
+    },
+    Thinking {
+        text: String,
+        /// `true` while the model is still emitting thinking tokens.
+        streaming: bool,
+    },
+    ToolCall {
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        ok: bool,
+        content: String,
+    },
     /// A sub-agent's LLM response, surfaced inline in the chat history
     /// (not just inside the collapsible parallel panel) so the user
     /// sees the actual work the sub-agents produced, the same way they
@@ -44,7 +56,10 @@ pub enum ChatMessage {
     /// Pushed by `input.rs` when a `ParallelProgress::SubAgentEvent`
     /// carrying `AgentUiEvent::LlmResponse` arrives on the
     /// `parallel_progress_rx` side-channel.
-    SubAgentResponse { title: String, text: String },
+    SubAgentResponse {
+        title: String,
+        text: String,
+    },
     /// Placeholder for the parallel-dispatch panel. Inserted right
     /// after `ToolCall: kms_parallel_dispatch`; the renderer expands
     /// it to a multi-line block (header + collapsible sub-agent rows)
@@ -54,7 +69,9 @@ pub enum ChatMessage {
     /// marker; actual data lives in `App.parallel_panel`.
     ParallelBlock,
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
     Divider,
 }
 
@@ -86,9 +103,11 @@ impl ChatMessage {
         width: usize,
     ) -> Vec<Line<'static>> {
         match self {
-            ChatMessage::User { text } => render_user_message(text, theme),
-            ChatMessage::Assistant { text } => render_assistant_message(text, theme),
-            ChatMessage::Thinking { text } => render_thinking(text, theme),
+            ChatMessage::User { text } => render_user_message(text, theme, width),
+            ChatMessage::Assistant { text, streaming } => {
+                render_assistant_message(text, *streaming, theme)
+            }
+            ChatMessage::Thinking { text, streaming } => render_thinking(text, *streaming, theme),
             ChatMessage::ToolCall { name, input } => render_tool_call(name, input, theme),
             ChatMessage::ToolResult { ok, content } => render_tool_result(*ok, content, theme),
             ChatMessage::SubAgentResponse { title, text } => {
@@ -114,7 +133,7 @@ impl ChatMessage {
     }
 }
 
-fn render_user_message(text: &str, theme: &Theme) -> Vec<Line<'static>> {
+fn render_user_message(text: &str, theme: &Theme, container_width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     // Split into per-line rows so the prefix only appears on the
@@ -125,10 +144,18 @@ fn render_user_message(text: &str, theme: &Theme) -> Vec<Line<'static>> {
     let total = text_lines.len();
     let truncated = total > MAX_USER_MESSAGE_LINES;
 
-    let display_count = if truncated { MAX_USER_MESSAGE_LINES } else { total };
+    let display_count = if truncated {
+        MAX_USER_MESSAGE_LINES
+    } else {
+        total
+    };
 
     for (i, line_text) in text_lines.iter().take(display_count).enumerate() {
-        let prefix = if i == 0 { theme.user_prefix.to_string() } else { "    ".to_string() };
+        let prefix = if i == 0 {
+            theme.user_prefix.to_string()
+        } else {
+            "    ".to_string()
+        };
         lines.push(Line::from(Span::styled(
             format!("{}{}", prefix, line_text),
             theme.user_style(),
@@ -145,7 +172,7 @@ fn render_user_message(text: &str, theme: &Theme) -> Vec<Line<'static>> {
         )));
     }
 
-    let separator = "\u{2500}".repeat(USER_SEPARATOR_LIMIT);
+    let separator = "\u{2500}".repeat(container_width);
     lines.push(Line::from(Span::styled(
         separator,
         Style::default().fg(theme.user_message),
@@ -153,15 +180,34 @@ fn render_user_message(text: &str, theme: &Theme) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_assistant_message(text: &str, theme: &Theme) -> Vec<Line<'static>> {
-    text.lines()
+fn render_assistant_message(text: &str, streaming: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = text
+        .lines()
         .map(|l| {
             Line::from(Span::styled(
                 format!("{}{}", theme.assistant_prefix, l),
                 theme.assistant_style(),
             ))
         })
-        .collect()
+        .collect();
+
+    if streaming {
+        // Append a block-cursor on the last line so the user sees
+        // the text is still being generated.
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled(
+                "\u{2588}".to_string(),
+                Style::default().fg(theme.spinner),
+            ));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("{}\u{2588}", theme.assistant_prefix),
+                Style::default().fg(theme.spinner),
+            )));
+        }
+    }
+
+    lines
 }
 
 /// Render a sub-agent's LLM response. The first line carries a
@@ -179,7 +225,11 @@ fn render_sub_agent_response(title: &str, text: &str, theme: &Theme) -> Vec<Line
     let mut lines = Vec::new();
     let tag = format!("[子任务:{}] ", title);
     for (i, l) in text.lines().enumerate() {
-        let prefix = if i == 0 { tag.clone() } else { " ".repeat(tag.chars().count()) };
+        let prefix = if i == 0 {
+            tag.clone()
+        } else {
+            " ".repeat(tag.chars().count())
+        };
         lines.push(Line::from(Span::styled(
             format!("{}{}", prefix, l),
             theme.assistant_style(),
@@ -199,7 +249,7 @@ fn render_sub_agent_response(title: &str, text: &str, theme: &Theme) -> Vec<Line
     lines
 }
 
-fn render_thinking(text: &str, theme: &Theme) -> Vec<Line<'static>> {
+fn render_thinking(text: &str, streaming: bool, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         format!("{}Thinking:", theme.thinking_prefix),
         theme.thinking_bold_style(),
@@ -217,6 +267,16 @@ fn render_thinking(text: &str, theme: &Theme) -> Vec<Line<'static>> {
             Style::default().fg(theme.text_muted),
         )));
     }
+    if streaming {
+        // Append a block-cursor on the last line so the user sees
+        // thinking is still in progress.
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled(
+                "\u{2588}".to_string(),
+                Style::default().fg(theme.spinner),
+            ));
+        }
+    }
     lines
 }
 
@@ -229,14 +289,20 @@ fn render_tool_call(name: &str, input: &Value, theme: &Theme) -> Vec<Line<'stati
         for (key, val) in obj {
             lines.push(Line::from(vec![
                 Span::styled("    ".to_string(), Style::default()),
-                Span::styled(format!("{}: ", key), Style::default().fg(theme.text_secondary)),
+                Span::styled(
+                    format!("{}: ", key),
+                    Style::default().fg(theme.text_secondary),
+                ),
                 Span::styled(format_value(val), Style::default().fg(theme.text_primary)),
             ]));
         }
     } else if !input.is_null() {
         lines.push(Line::from(vec![
             Span::styled("    ".to_string(), Style::default()),
-            Span::styled(truncate_str(&input.to_string(), usize::MAX), Style::default().fg(theme.text_primary)),
+            Span::styled(
+                truncate_str(&input.to_string(), usize::MAX),
+                Style::default().fg(theme.text_primary),
+            ),
         ]));
     }
     lines
@@ -330,9 +396,9 @@ fn render_parallel_panel(
     theme: &Theme,
     width: usize,
 ) -> Vec<Line<'static>> {
-    use std::time::Instant;
-    use ratatui::style::Modifier;
     use crate::parallel_panel::SubAgentEntryLayout;
+    use ratatui::style::Modifier;
+    use std::time::Instant;
 
     let mut lines = Vec::new();
 
@@ -342,12 +408,7 @@ fn render_parallel_panel(
     let running = panel.running_count();
     let header = format!(
         " Parallel Dispatch · {}/{}  ({} ✓ · {} ⠋ · {} ✗) · {}",
-        panel.completed,
-        panel.total,
-        panel.completed,
-        running,
-        panel.failed,
-        elapsed_label,
+        panel.completed, panel.total, panel.completed, running, panel.failed, elapsed_label,
     );
     lines.push(Line::from(Span::styled(
         header,
@@ -371,7 +432,10 @@ fn render_parallel_panel(
     let mut visible: Vec<usize> = Vec::new();
     let mut foldable: Vec<usize> = Vec::new();
     for (i, e) in panel.sub_agents.iter().enumerate() {
-        let is_done = matches!(e.status, crate::parallel_panel::SubAgentStatus::Completed { .. });
+        let is_done = matches!(
+            e.status,
+            crate::parallel_panel::SubAgentStatus::Completed { .. }
+        );
         if is_done && !e.is_recently_completed(now) {
             foldable.push(i);
         } else {
@@ -421,10 +485,7 @@ fn render_parallel_panel(
                     lines.push(Line::from(spans));
                 }
             }
-        } else if matches!(
-            entry.status,
-            crate::parallel_panel::SubAgentStatus::Running
-        ) {
+        } else if matches!(entry.status, crate::parallel_panel::SubAgentStatus::Running) {
             // Auto-peek: even without expanding, show one line of
             // "what is this sub-agent doing right now" so the user
             // can monitor all sub-agents without any keystrokes.
@@ -445,17 +506,16 @@ fn render_parallel_panel(
         );
         lines.push(Line::from(Span::styled(
             summary,
-            Style::default().fg(theme.text_muted).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::DIM),
         )));
     }
 
     lines
 }
 
-fn render_sub_agent_event(
-    ev: &SubAgentEvent,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+fn render_sub_agent_event(ev: &SubAgentEvent, theme: &Theme) -> Vec<Line<'static>> {
     match ev {
         SubAgentEvent::LlmResponse(s) => {
             if s.is_empty() {
@@ -475,8 +535,7 @@ fn render_sub_agent_event(
             // shows the same human-readable form as the auto-peek
             // (e.g. "View src/lib.rs" instead of a raw
             // `kms_view_local path: src/lib.rs`).
-            let summary =
-                crate::parallel_panel::tool_user_facing_name(name, input);
+            let summary = crate::parallel_panel::tool_user_facing_name(name, input);
             vec![Line::from(vec![
                 Span::styled("      🔧 ".to_string(), Style::default()),
                 Span::styled(summary, Style::default().fg(theme.text_secondary)),
@@ -504,10 +563,7 @@ fn render_sub_agent_event(
         }
         SubAgentEvent::Error(msg) => vec![Line::from(vec![
             Span::styled("      ✗ ".to_string(), theme.error_style()),
-            Span::styled(
-                truncate_str(msg, 200),
-                theme.error_style(),
-            ),
+            Span::styled(truncate_str(msg, 200), theme.error_style()),
         ])],
     }
 }
@@ -532,8 +588,8 @@ fn render_sub_agent_row(
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
-    use ratatui::style::Modifier;
     use crate::parallel_panel::SubAgentStatus;
+    use ratatui::style::Modifier;
 
     // --- Status icon + style ---------------------------------------------
     let (icon, icon_style) = match &entry.status {
@@ -542,7 +598,7 @@ fn render_sub_agent_row(
             Style::default().fg(theme.spinner),
         ),
         SubAgentStatus::Completed { .. } => ("\u{2713}", theme.success_style()), // ✓
-        SubAgentStatus::Failed { .. } => ("\u{2717}", theme.error_style()),    // ✗
+        SubAgentStatus::Failed { .. } => ("\u{2717}", theme.error_style()),      // ✗
     };
 
     // --- Title style -----------------------------------------------------
@@ -722,7 +778,7 @@ mod render_tests {
     #[test]
     fn short_user_message_renders_in_full() {
         let text = "line a\nline b\nline c";
-        let lines = render_user_message(text, &theme());
+        let lines = render_user_message(text, &theme(), 80);
         // 3 text lines + 1 separator = 4
         assert_eq!(lines.len(), 4);
         // No "more lines" indicator on short messages.
@@ -735,8 +791,11 @@ mod render_tests {
 
     #[test]
     fn exactly_threshold_lines_is_not_truncated() {
-        let text = (1..=10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let lines = render_user_message(&text, &theme());
+        let text = (1..=10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = render_user_message(&text, &theme(), 80);
         // 10 text lines + 1 separator = 11, no truncation marker
         assert_eq!(lines.len(), 11);
         assert_eq!(message_count(&lines), 0);
@@ -744,8 +803,11 @@ mod render_tests {
 
     #[test]
     fn over_threshold_user_message_is_folded() {
-        let text = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let lines = render_user_message(&text, &theme());
+        let text = (1..=50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = render_user_message(&text, &theme(), 80);
         // 10 visible text lines + 1 "more lines" indicator + 1 separator = 12
         assert_eq!(lines.len(), 12);
         // The truncation indicator reports exactly 40 hidden lines.
@@ -763,8 +825,11 @@ mod render_tests {
     fn assistant_message_is_never_folded() {
         // Even a 200-line assistant reply must render in full per the
         // design rule: agent's pure-text responses are always complete.
-        let text = (1..=200).map(|i| format!("reply {i}")).collect::<Vec<_>>().join("\n");
-        let lines = render_assistant_message(&text, &theme());
+        let text = (1..=200)
+            .map(|i| format!("reply {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = render_assistant_message(&text, false, &theme());
         // 200 reply lines, no separator, no truncation marker.
         assert_eq!(lines.len(), 200);
         assert_eq!(message_count(&lines), 0);
@@ -772,7 +837,7 @@ mod render_tests {
 
     #[test]
     fn empty_user_message_still_renders_separator() {
-        let lines = render_user_message("", &theme());
+        let lines = render_user_message("", &theme(), 80);
         // Empty text has 0 lines; we still emit the separator.
         assert_eq!(lines.len(), 1);
     }
@@ -781,27 +846,35 @@ mod render_tests {
     fn parallel_block_renders_header_with_progress() {
         use crate::parallel_panel::ParallelPanelState;
         let mut panel = ParallelPanelState::new(3);
-        panel.apply(&dendrite_tools::parallel_progress::ParallelProgress::StagingCreated {
-            index: 0,
-            total: 3,
-            title: "A".to_string(),
-        });
-        panel.apply(&dendrite_tools::parallel_progress::ParallelProgress::StagingCreated {
-            index: 1,
-            total: 3,
-            title: "B".to_string(),
-        });
-        panel.apply(&dendrite_tools::parallel_progress::ParallelProgress::StagingCreated {
-            index: 2,
-            total: 3,
-            title: "C".to_string(),
-        });
-        panel.apply(&dendrite_tools::parallel_progress::ParallelProgress::SubAgentCompleted {
-            index: 0,
-            total: 3,
-            title: "A".to_string(),
-            duration_ms: 1500,
-        });
+        panel.apply(
+            &dendrite_tools::parallel_progress::ParallelProgress::StagingCreated {
+                index: 0,
+                total: 3,
+                title: "A".to_string(),
+            },
+        );
+        panel.apply(
+            &dendrite_tools::parallel_progress::ParallelProgress::StagingCreated {
+                index: 1,
+                total: 3,
+                title: "B".to_string(),
+            },
+        );
+        panel.apply(
+            &dendrite_tools::parallel_progress::ParallelProgress::StagingCreated {
+                index: 2,
+                total: 3,
+                title: "C".to_string(),
+            },
+        );
+        panel.apply(
+            &dendrite_tools::parallel_progress::ParallelProgress::SubAgentCompleted {
+                index: 0,
+                total: 3,
+                title: "A".to_string(),
+                duration_ms: 1500,
+            },
+        );
         let lines = render_parallel_panel(&panel, &theme(), 80);
         // 1 header + 1 row for A (Completed) + 1 row + 1 auto-peek
         // for B (Running) + 1 row + 1 auto-peek for C (Running)
@@ -982,7 +1055,10 @@ mod render_tests {
         // word `completed` must appear.
         let last = lines.last().expect("at least header + summary").to_string();
         assert!(last.contains("+"), "expected summary marker in: {last}");
-        assert!(last.contains("completed"), "expected 'completed' in: {last}");
+        assert!(
+            last.contains("completed"),
+            "expected 'completed' in: {last}"
+        );
     }
 
     /// A row whose `completed_at` is within the TTL renders its
@@ -1017,7 +1093,10 @@ mod render_tests {
             .find(|s| s.content.contains("alpha"))
             .expect("title span present");
         assert!(
-            title_span.style.add_modifier.contains(Modifier::CROSSED_OUT),
+            title_span
+                .style
+                .add_modifier
+                .contains(Modifier::CROSSED_OUT),
             "expected CROSSED_OUT on recently-completed title, got: {:?}",
             title_span.style
         );
