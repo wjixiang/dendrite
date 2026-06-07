@@ -299,19 +299,19 @@ impl ParallelPanelState {
                     // count `ToolCall` events (not `ToolResult`); one
                     // tool call produces one of each, so the result
                     // counter would double-count.
-                    if matches!(event, agentik_types::AgentUiEvent::ToolCall { .. }) {
+                    if matches!(event, agentik_types::AgentEvent::ToolCall { .. }) {
                         entry.tool_call_count += 1;
                     }
                     // Handle streaming deltas directly on the entry
                     // rather than pushing them through map_agent_event().
                     match event {
-                        agentik_types::AgentUiEvent::TextDelta(token) => {
+                        agentik_types::AgentEvent::TextDelta(token) => {
                             entry
                                 .streaming_text
                                 .get_or_insert_with(String::new)
                                 .push_str(token);
                         }
-                        agentik_types::AgentUiEvent::LlmResponse(text) => {
+                        agentik_types::AgentEvent::LlmResponse(text) => {
                             // Finalize: clear streaming text, push the
                             // authoritative event to the log.
                             entry.streaming_text = None;
@@ -421,9 +421,9 @@ impl ParallelPanelState {
 }
 
 fn map_agent_event(
-    event: &agentik_types::AgentUiEvent,
+    event: &agentik_types::AgentEvent,
 ) -> Option<SubAgentEvent> {
-    use agentik_types::AgentUiEvent as E;
+    use agentik_types::AgentEvent as E;
     match event {
         E::LlmResponse(text) => Some(SubAgentEvent::LlmResponse(text.clone())),
         E::ToolCall { name, input } => Some(SubAgentEvent::ToolCall {
@@ -564,7 +564,7 @@ fn format_value_short(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentik_types::AgentUiEvent;
+    use agentik_types::AgentEvent;
     use dendrite_tools::parallel_progress::ParallelProgress;
 
     fn fresh_panel() -> ParallelPanelState {
@@ -667,7 +667,7 @@ mod tests {
         for i in 0..30 {
             p.apply(&ParallelProgress::SubAgentEvent {
                 title: "A".to_string(),
-                event: AgentUiEvent::LlmResponse(format!("r{i}")),
+                event: AgentEvent::LlmResponse(format!("r{i}")),
             });
         }
         // Cap is 20; oldest 10 dropped.
@@ -806,7 +806,7 @@ mod tests {
         for _ in 0..3 {
             p.apply(&ParallelProgress::SubAgentEvent {
                 title: "A".to_string(),
-                event: AgentUiEvent::ToolCall {
+                event: AgentEvent::ToolCall {
                     name: "kms_view_local".to_string(),
                     input: serde_json::json!({"path": "x"}),
                 },
@@ -815,7 +815,7 @@ mod tests {
         // ToolResult events should NOT increment — only ToolCall does.
         p.apply(&ParallelProgress::SubAgentEvent {
             title: "A".to_string(),
-            event: AgentUiEvent::ToolResult {
+            event: AgentEvent::ToolResult {
                 ok: true,
                 content: "{}".to_string(),
             },
@@ -869,7 +869,7 @@ mod tests {
         });
         p.apply(&ParallelProgress::SubAgentEvent {
             title: "A".to_string(),
-            event: AgentUiEvent::ToolCall {
+            event: AgentEvent::ToolCall {
                 name: "kms_view_local".to_string(),
                 input: serde_json::json!({"path": "src/pdb.rs"}),
             },
@@ -924,11 +924,11 @@ mod tests {
         // find the tool call, not say "Thinking…".
         p.apply(&ParallelProgress::SubAgentEvent {
             title: "A".to_string(),
-            event: AgentUiEvent::Thinking("planning".to_string()),
+            event: AgentEvent::Thinking("planning".to_string()),
         });
         p.apply(&ParallelProgress::SubAgentEvent {
             title: "A".to_string(),
-            event: AgentUiEvent::ToolCall {
+            event: AgentEvent::ToolCall {
                 name: "kms_search_entity".to_string(),
                 input: serde_json::json!({"query": "protein"}),
             },

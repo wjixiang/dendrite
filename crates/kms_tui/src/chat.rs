@@ -54,7 +54,7 @@ pub enum ChatMessage {
     /// what when several are running in parallel.
     ///
     /// Pushed by `input.rs` when a `ParallelProgress::SubAgentEvent`
-    /// carrying `AgentUiEvent::LlmResponse` arrives on the
+    /// carrying `AgentEvent::LlmResponse` arrives on the
     /// `parallel_progress_rx` side-channel.
     SubAgentResponse {
         title: String,
@@ -129,6 +129,60 @@ impl ChatMessage {
                 theme.error_style(),
             ))],
             ChatMessage::Divider => vec![Line::from("")],
+        }
+    }
+
+    /// Cheap upper-bound estimate of the number of `Line` objects that
+    /// `to_lines()` would produce. Used for viewport culling: we
+    /// accumulate these estimates across messages to map a scroll
+    /// offset (in visual rows) to a message index range, then only call
+    /// the expensive `to_lines()` on that range.
+    ///
+    /// Overestimates are safe (we render a few extra messages);
+    /// underestimates would hide content, which must never happen.
+    pub fn estimate_lines(&self) -> usize {
+        match self {
+            ChatMessage::User { text } => {
+                let line_count = text.lines().count();
+                let truncated = line_count > MAX_USER_MESSAGE_LINES;
+                let display = if truncated { MAX_USER_MESSAGE_LINES } else { line_count };
+                let mut est = display;
+                if truncated { est += 1; }
+                est + 1 // +1 separator
+            }
+            ChatMessage::Assistant { text, .. } => text.lines().count().max(1),
+            ChatMessage::Thinking { text, .. } => {
+                let line_count = text.lines().count();
+                let mut est = 1; // header
+                est += line_count.min(MAX_THINKING_LINES);
+                if line_count > MAX_THINKING_LINES { est += 1; }
+                est.max(2)
+            }
+            ChatMessage::ToolCall { name: _, input } => {
+                1 + input.as_object().map_or(1, |m| m.len())
+            }
+            ChatMessage::ToolResult { ok: _, content } => {
+                let mut est = 1; // header
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(content) {
+                    match &val {
+                        serde_json::Value::Object(map) => { est += map.len(); }
+                        serde_json::Value::Array(arr) => { est += arr.len().min(MAX_ARRAY_ITEMS) + 1; }
+                        _ => { est += 1; }
+                    }
+                } else {
+                    est += content.lines().count().min(MAX_TOOL_RESULT_LINES);
+                }
+                est
+            }
+            ChatMessage::SubAgentResponse { text, .. } => text.lines().count().max(1),
+            ChatMessage::ParallelBlock => {
+                // Generous upper bound covering 1 header + rows for up
+                // to ~16 sub-agents with expanded event logs.
+                50
+            }
+            ChatMessage::Done => 1,
+            ChatMessage::Error { .. } => 1,
+            ChatMessage::Divider => 1,
         }
     }
 }
@@ -893,7 +947,7 @@ mod render_tests {
     #[test]
     fn parallel_block_expanded_shows_sub_agent_events() {
         use crate::parallel_panel::ParallelPanelState;
-        use agentik_types::AgentUiEvent;
+        use agentik_types::AgentEvent;
         use dendrite_tools::parallel_progress::ParallelProgress;
         let mut panel = ParallelPanelState::new(1);
         panel.apply(&ParallelProgress::StagingCreated {
@@ -903,7 +957,7 @@ mod render_tests {
         });
         panel.apply(&ParallelProgress::SubAgentEvent {
             title: "A".to_string(),
-            event: AgentUiEvent::LlmResponse("hello".to_string()),
+            event: AgentEvent::LlmResponse("hello".to_string()),
         });
         panel.selected = 0;
         panel.toggle_selected(); // expand
@@ -916,7 +970,7 @@ mod render_tests {
     #[test]
     fn parallel_block_collapsed_does_not_show_events() {
         use crate::parallel_panel::ParallelPanelState;
-        use agentik_types::AgentUiEvent;
+        use agentik_types::AgentEvent;
         use dendrite_tools::parallel_progress::ParallelProgress;
         let mut panel = ParallelPanelState::new(1);
         panel.apply(&ParallelProgress::StagingCreated {
@@ -926,7 +980,7 @@ mod render_tests {
         });
         panel.apply(&ParallelProgress::SubAgentEvent {
             title: "A".to_string(),
-            event: AgentUiEvent::LlmResponse("hello".to_string()),
+            event: AgentEvent::LlmResponse("hello".to_string()),
         });
         // selected=0 default, expanded=false default
         let lines = render_parallel_panel(&panel, &theme(), 80);
@@ -960,7 +1014,7 @@ mod render_tests {
     #[test]
     fn running_row_includes_tree_connector_index_and_activity_hint() {
         use crate::parallel_panel::ParallelPanelState;
-        use agentik_types::AgentUiEvent;
+        use agentik_types::AgentEvent;
         use dendrite_tools::parallel_progress::ParallelProgress;
         let mut panel = ParallelPanelState::new(1);
         panel.apply(&ParallelProgress::StagingCreated {
@@ -970,7 +1024,7 @@ mod render_tests {
         });
         panel.apply(&ParallelProgress::SubAgentEvent {
             title: "alpha".to_string(),
-            event: AgentUiEvent::ToolCall {
+            event: AgentEvent::ToolCall {
                 name: "kms_view_local".to_string(),
                 input: serde_json::json!({"path": "src/lib.rs"}),
             },
@@ -998,7 +1052,7 @@ mod render_tests {
     #[test]
     fn expanded_row_does_not_repeat_auto_peek() {
         use crate::parallel_panel::ParallelPanelState;
-        use agentik_types::AgentUiEvent;
+        use agentik_types::AgentEvent;
         use dendrite_tools::parallel_progress::ParallelProgress;
         let mut panel = ParallelPanelState::new(1);
         panel.apply(&ParallelProgress::StagingCreated {
@@ -1008,7 +1062,7 @@ mod render_tests {
         });
         panel.apply(&ParallelProgress::SubAgentEvent {
             title: "alpha".to_string(),
-            event: AgentUiEvent::ToolCall {
+            event: AgentEvent::ToolCall {
                 name: "kms_search_entity".to_string(),
                 input: serde_json::json!({"query": "foo"}),
             },
@@ -1105,5 +1159,118 @@ mod render_tests {
             panel.sub_agents[0].status,
             SubAgentStatus::Completed { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod estimate_tests {
+    use super::*;
+    use crate::theme::Theme;
+
+    fn theme() -> Theme {
+        Theme::default_theme()
+    }
+
+    #[test]
+    fn estimate_never_undercounts_assistant() {
+        let msg = ChatMessage::Assistant {
+            text: "line1\nline2\nline3".into(),
+            streaming: false,
+        };
+        let actual = msg.to_lines(&theme(), None, 80).len();
+        assert!(
+            msg.estimate_lines() >= actual,
+            "estimate={} < actual={}",
+            msg.estimate_lines(),
+            actual,
+        );
+    }
+
+    #[test]
+    fn estimate_never_undercounts_user() {
+        let msg = ChatMessage::User {
+            text: "line1\nline2".into(),
+        };
+        let actual = msg.to_lines(&theme(), None, 80).len();
+        assert!(
+            msg.estimate_lines() >= actual,
+            "estimate={} < actual={}",
+            msg.estimate_lines(),
+            actual,
+        );
+    }
+
+    #[test]
+    fn estimate_never_undercounts_thinking() {
+        let msg = ChatMessage::Thinking {
+            text: "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl".into(),
+            streaming: false,
+        };
+        let actual = msg.to_lines(&theme(), None, 80).len();
+        assert!(
+            msg.estimate_lines() >= actual,
+            "estimate={} < actual={}",
+            msg.estimate_lines(),
+            actual,
+        );
+    }
+
+    #[test]
+    fn estimate_never_undercounts_truncated_user() {
+        let long_text = (1..=50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let msg = ChatMessage::User { text: long_text };
+        let actual = msg.to_lines(&theme(), None, 80).len();
+        assert!(
+            msg.estimate_lines() >= actual,
+            "estimate={} < actual={}",
+            msg.estimate_lines(),
+            actual,
+        );
+    }
+
+    #[test]
+    fn estimate_never_undercounts_tool_call() {
+        let msg = ChatMessage::ToolCall {
+            name: "kms_view_local".into(),
+            input: serde_json::json!({"path": "/心血管", "depth": 3}),
+        };
+        let actual = msg.to_lines(&theme(), None, 80).len();
+        assert!(
+            msg.estimate_lines() >= actual,
+            "estimate={} < actual={}",
+            msg.estimate_lines(),
+            actual,
+        );
+    }
+
+    #[test]
+    fn estimate_never_undercounts_tool_result() {
+        let msg = ChatMessage::ToolResult {
+            ok: true,
+            content: r#"{"title": "心力衰竭 · 药物治疗", "content": "使用 ACEI"}"#.into(),
+        };
+        let actual = msg.to_lines(&theme(), None, 80).len();
+        assert!(
+            msg.estimate_lines() >= actual,
+            "estimate={} < actual={}",
+            msg.estimate_lines(),
+            actual,
+        );
+    }
+
+    #[test]
+    fn estimate_simple_types() {
+        assert_eq!(ChatMessage::Divider.estimate_lines(), 1);
+        assert_eq!(ChatMessage::Done.estimate_lines(), 1);
+        assert_eq!(
+            ChatMessage::Error {
+                message: "oops".into()
+            }
+            .estimate_lines(),
+            1,
+        );
     }
 }

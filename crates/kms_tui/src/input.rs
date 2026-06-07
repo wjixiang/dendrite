@@ -18,7 +18,7 @@ pub use paste::{PASTE_SUMMARY_LEN_THRESHOLD, PASTE_SUMMARY_LINE_THRESHOLD, summa
 
 use std::time::Duration;
 
-use agentik_types::AgentUiEvent;
+use agentik_types::AgentEvent;
 use crossterm::event::Event;
 use ratatui::Terminal;
 
@@ -40,7 +40,7 @@ pub async fn run_app(
         // process them. Draining into a Vec first avoids a mutable
         // borrow conflict: `rx` borrows `app.event_rx` while the
         // helper functions need `&mut app` for the messages map.
-        let agent_events: Vec<AgentUiEvent> = if let Some(rx) = &mut app.agent_event_rx {
+        let agent_events: Vec<AgentEvent> = if let Some(rx) = &mut app.agent_event_rx {
             let mut events = Vec::new();
             while let Ok(event) = rx.try_recv() {
                 events.push(event);
@@ -53,7 +53,7 @@ pub async fn run_app(
         for event in agent_events {
             tracing::debug!("{:?}", &event);
             match event {
-                AgentUiEvent::Done => {
+                AgentEvent::Done => {
                     // Finalize any still-streaming messages
                     let kind = app.agent_kind;
                     let history = app.agent_messages_map.get_mut(&kind).unwrap();
@@ -66,29 +66,29 @@ pub async fn run_app(
                     // any knowledge entries created during this run.
                     pending_refresh = true;
                 }
-                AgentUiEvent::Requesting => {
+                AgentEvent::Requesting => {
                     app.agent_requesting = true;
                 }
-                AgentUiEvent::TextDelta(token) => {
+                AgentEvent::TextDelta(token) => {
                     app.agent_requesting = false;
                     append_to_streaming_assistant(app, &token);
                 }
-                AgentUiEvent::ThinkingDelta(token) => {
+                AgentEvent::ThinkingDelta(token) => {
                     app.agent_requesting = false;
                     append_to_streaming_thinking(app, &token);
                 }
-                AgentUiEvent::UsageUpdate { output_tokens, .. } => {
+                AgentEvent::UsageUpdate { output_tokens, .. } => {
                     app.agent_usage_tokens = Some(output_tokens);
                 }
                 // Stream lifecycle events — absorbed silently.
-                AgentUiEvent::StreamStart { .. }
-                | AgentUiEvent::ContentBlockStart { .. }
-                | AgentUiEvent::ContentBlockStop { .. }
-                | AgentUiEvent::StreamDelta { .. } => {}
+                AgentEvent::StreamStart { .. }
+                | AgentEvent::ContentBlockStart { .. }
+                | AgentEvent::ContentBlockStop { .. }
+                | AgentEvent::StreamDelta { .. } => {}
                 // Aggregated responses and tool events.
                 // ToolResult may have modified the knowledge tree
                 // (e.g. direct kms_create_knowledge), so refresh.
-                event @ AgentUiEvent::ToolResult { .. } => {
+                event @ AgentEvent::ToolResult { .. } => {
                     app.agent_requesting = false;
                     handle_final_event(app, event);
                     pending_refresh = true;
@@ -153,7 +153,7 @@ pub async fn run_app(
                 // full response.
                 if let P::SubAgentEvent { title, event } = &event {
                     match event {
-                        AgentUiEvent::TextDelta(token) => {
+                        AgentEvent::TextDelta(token) => {
                             let kind = app.agent_kind;
                             if let Some(history) = app.agent_messages_map.get_mut(&kind) {
                                 let found = history.iter_mut().rev().find(|m| {
@@ -174,7 +174,7 @@ pub async fn run_app(
                                 }
                             }
                         }
-                        AgentUiEvent::LlmResponse(text) => {
+                        AgentEvent::LlmResponse(text) => {
                             let kind = app.agent_kind;
                             if let Some(history) = app.agent_messages_map.get_mut(&kind) {
                                 let found = history.iter_mut().rev().find(|m| {

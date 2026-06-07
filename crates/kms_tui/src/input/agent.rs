@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use agent_compose::KmsContext;
 use agent_knowledge::KnowledgeContext;
-use agentik_types::AgentUiEvent;
+use agentik_types::AgentEvent;
 use agentik_types::messages::ContentBlock;
 
 use crate::chat::ChatMessage;
@@ -132,17 +132,17 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
         agent.event_tx = Some(tx.clone());
 
         if let Err(e) = agent.inject_message(vec![ContentBlock::Text { text: expanded }]) {
-            let _ = tx.send(AgentUiEvent::Error(format!("Inject error: {}", e)));
-            let _ = tx.send(AgentUiEvent::Done);
+            let _ = tx.send(AgentEvent::Error(format!("Inject error: {}", e)));
+            let _ = tx.send(AgentEvent::Done);
             agent.event_tx = None;
             return;
         }
 
         if let Err(e) = agent.start().await {
-            let _ = tx.send(AgentUiEvent::Error(format!("Agent failed: {}", e)));
+            let _ = tx.send(AgentEvent::Error(format!("Agent failed: {}", e)));
         }
 
-        let _ = tx.send(AgentUiEvent::Done);
+        let _ = tx.send(AgentEvent::Done);
         agent.event_tx = None;
     });
 }

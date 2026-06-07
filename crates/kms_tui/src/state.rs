@@ -256,7 +256,7 @@ pub struct App {
     pub agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
     pub agent_kind: AgentKind,
     pub agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>>,
-    pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_types::AgentUiEvent>>,
+    pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_types::AgentEvent>>,
     pub agent_running: bool,
     pub agent_requesting: bool,
     pub spinner_tick: usize,

@@ -142,7 +142,7 @@ pub struct Diagnostic {
 | 角色 | Crate | 工具子集 | 用途 |
 |------|-------|----------|------|
 | **Compose** | `agent-compose` | 25 个 `kms_*` 工具（含写操作） | 知识**构建**专家。处理知识录入、索引调整、结构修复 |
-| **Retrieval** | `agent-knowledge` | 8 个只读 `kms_*` 工具 | 只读**检索**专家。强制使用并行工具调用 + `attempt_complete` 模式 |
+| **Retrieval** | `agent-knowledge` | 8 个只读 `kms_*` 工具 | 只读**检索**专家。强制使用并行工具调用，无工具调用时自动结束 |
 | **Parallel** | `agent-compose::ParallelComposeContext` | Compose 工具 + `kms_parallel_dispatch` | **编排**专家。把大任务切分给 N 个子 Agent 并行处理，最后汇总报告 |
 
 ### Parallel Subtree 编排模式
@@ -324,7 +324,7 @@ dendrite/
 │   └── agent-knowledge/      # 只读检索 agent 上下文
 │       ├── src/
 │       │   ├── context.rs    # KnowledgeContext
-│       │   └── prompt.rs     # KNOWLEDGE_RETRIEVAL_PROMPT（并行调用 + attempt_complete）
+│       │   └── prompt.rs     # KNOWLEDGE_RETRIEVAL_PROMPT（并行调用，无工具调用自动结束）
 │       └── Cargo.toml
 │
 ├── data/                     # 运行时数据
@@ -482,9 +482,6 @@ Prompt 是**领域知识**最重要的载体，调整时务必同时跑一遍回
 
 ## 已知问题 / 未来工作
 
-- [ ] **检索 agent 的 `attempt_complete` 偶发不触发**：少数情况下 model 在最后
-      一轮只输出文本不调工具，目前依赖下一轮用户输入提示。考虑在 TUI 加
-      "force complete" 按钮或加 N 轮后兜底
 - [ ] **Parallel subtree 合并时机**：当前只在所有子 agent 完成后一次性 merge。
       极大输入（>10 子任务）时整体时延 = max(子任务)，无法流式上报进度到 TUI
 - [ ] **诊断规则的精准度**：

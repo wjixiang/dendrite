@@ -1,18 +1,18 @@
-use agentik_types::AgentUiEvent;
+use agentik_types::AgentEvent;
 
 use crate::chat::ChatMessage;
 use crate::state::App;
 
 /// Convert a high-level agent event to one or more chat messages.
-pub fn agent_event_to_message(event: AgentUiEvent) -> Vec<ChatMessage> {
+pub fn agent_event_to_message(event: AgentEvent) -> Vec<ChatMessage> {
     match event {
-        AgentUiEvent::LlmResponse(text) => {
+        AgentEvent::LlmResponse(text) => {
             vec![ChatMessage::Assistant { text, streaming: false }]
         }
-        AgentUiEvent::Thinking(text) => {
+        AgentEvent::Thinking(text) => {
             vec![ChatMessage::Thinking { text, streaming: false }]
         }
-        AgentUiEvent::ToolCall { name, input } => {
+        AgentEvent::ToolCall { name, input } => {
             if name == "kms_parallel_dispatch" {
                 vec![
                     ChatMessage::ToolCall { name, input },
@@ -22,17 +22,17 @@ pub fn agent_event_to_message(event: AgentUiEvent) -> Vec<ChatMessage> {
                 vec![ChatMessage::ToolCall { name, input }]
             }
         }
-        AgentUiEvent::ToolResult { ok, content } => vec![ChatMessage::ToolResult { ok, content }],
-        AgentUiEvent::Done => vec![ChatMessage::Done],
-        AgentUiEvent::Error(msg) => vec![ChatMessage::Error { message: msg }],
-        AgentUiEvent::Requesting => Vec::new(),
-        AgentUiEvent::TextDelta(_)
-        | AgentUiEvent::ThinkingDelta(_)
-        | AgentUiEvent::UsageUpdate { .. }
-        | AgentUiEvent::StreamStart { .. }
-        | AgentUiEvent::ContentBlockStart { .. }
-        | AgentUiEvent::ContentBlockStop { .. }
-        | AgentUiEvent::StreamDelta { .. } => Vec::new(),
+        AgentEvent::ToolResult { ok, content } => vec![ChatMessage::ToolResult { ok, content }],
+        AgentEvent::Done => vec![ChatMessage::Done],
+        AgentEvent::Error(msg) => vec![ChatMessage::Error { message: msg }],
+        AgentEvent::Requesting => Vec::new(),
+        AgentEvent::TextDelta(_)
+        | AgentEvent::ThinkingDelta(_)
+        | AgentEvent::UsageUpdate { .. }
+        | AgentEvent::StreamStart { .. }
+        | AgentEvent::ContentBlockStart { .. }
+        | AgentEvent::ContentBlockStop { .. }
+        | AgentEvent::StreamDelta { .. } => Vec::new(),
     }
 }
 
@@ -96,12 +96,12 @@ pub fn finalize_streaming_history(history: &mut Vec<ChatMessage>) {
 /// finalize the in-flight streaming message rather than pushing a
 /// duplicate. For tool events, we finalize streaming first, then push
 /// the new message.
-pub fn handle_final_event(app: &mut App, event: agentik_types::AgentUiEvent) {
+pub fn handle_final_event(app: &mut App, event: agentik_types::AgentEvent) {
     let kind = app.agent_kind;
     let history = app.agent_messages_map.get_mut(&kind).unwrap();
 
     match event {
-        AgentUiEvent::LlmResponse(text) => {
+        AgentEvent::LlmResponse(text) => {
             let finalized = history.iter_mut().rev().find(|m| {
                 matches!(m, ChatMessage::Assistant { streaming: true, .. })
             });
@@ -119,7 +119,7 @@ pub fn handle_final_event(app: &mut App, event: agentik_types::AgentUiEvent) {
                 });
             }
         }
-        AgentUiEvent::Thinking(text) => {
+        AgentEvent::Thinking(text) => {
             let finalized = history.iter_mut().rev().find(|m| {
                 matches!(m, ChatMessage::Thinking { streaming: true, .. })
             });

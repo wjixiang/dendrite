@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::chat::ChatMessage;
 use crate::state::{App, Panel};
 use crate::theme::Theme;
 
@@ -43,6 +44,54 @@ fn wrapped_line_count(lines: &[Line<'_>], inner_width: usize) -> usize {
         .sum()
 }
 
+/// Extra messages to include above the viewport start. Covers the
+/// gap between our cheap `estimate_lines()` (which counts pre-wrap
+/// Line objects) and Paragraph's actual post-wrap visual rows.
+const VIEWPORT_MSG_BUFFER: usize = 3;
+
+/// Maximum number of messages to render per frame. When the total
+/// message count exceeds this threshold, viewport culling kicks in:
+/// only the messages near the current scroll position are converted
+/// to render lines. For short sessions (<= this value) all messages
+/// are rendered — identical to the pre-optimization behavior.
+const RENDER_ALL_THRESHOLD: usize = 50;
+
+/// Find the range of message indices `[start, end)` that should be
+/// rendered given the current scroll position. Uses
+/// `ChatMessage::estimate_lines()` as a cheap proxy for visual
+/// height to walk messages until the cumulative estimate exceeds
+/// `scroll_y`.
+///
+/// When the total message count is small (below `RENDER_ALL_THRESHOLD`),
+/// returns `(0, len)` — no culling, identical to the old behavior.
+fn visible_message_range(
+    messages: &[ChatMessage],
+    scroll_y: usize,
+) -> (usize, usize) {
+    let len = messages.len();
+    if len <= RENDER_ALL_THRESHOLD {
+        return (0, len);
+    }
+
+    let mut cumulative: usize = 0;
+    let mut start: usize = 0;
+    for (i, msg) in messages.iter().enumerate() {
+        if cumulative >= scroll_y {
+            start = i.saturating_sub(VIEWPORT_MSG_BUFFER);
+            break;
+        }
+        cumulative += msg.estimate_lines();
+        // If we exhausted all messages without reaching scroll_y,
+        // the scroll is pinned to the bottom. Show the tail.
+        if i + 1 == len {
+            start = len.saturating_sub(RENDER_ALL_THRESHOLD);
+        }
+    }
+
+    let end = (start + RENDER_ALL_THRESHOLD).min(len);
+    (start, end)
+}
+
 pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -73,9 +122,10 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         )
     };
 
-    let rendered_lines: Vec<Line<'static>> = if app.providers.is_empty() {
+    let (rendered_lines, skipped_rows): (Vec<Line<'static>>, usize) =
+        if app.providers.is_empty() {
         // Empty-pool first-run hint instead of the normal chat history.
-        vec![
+        (vec![
             Line::from(Span::styled(
                 "  No LLM providers configured.",
                 Style::default()
@@ -126,16 +176,38 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 "  with different API keys) are supported to fan out TPM.",
                 Style::default().fg(theme.text_muted),
             )),
-        ]
+        ], 0)
     } else {
         let panel_state = app.parallel_panel.as_ref();
-        // Subtract 4 chars for the conv block's left+right borders
-        // (the chat panel adds 2 to each side).
-        let inner_width = area.width.saturating_sub(4) as usize;
-        app.agent_messages()
+        let to_lines_width = area.width.saturating_sub(4) as usize;
+        let messages = app.agent_messages();
+
+        // --- Viewport culling: two-phase rendering ---
+        //
+        // Phase A: cheap pre-scan with estimate_lines() to find the
+        // visible message range and compute scroll bounds.
+        let inner_height = chunks[0].height.saturating_sub(2) as usize;
+        let est_total: usize = messages.iter().map(|m| m.estimate_lines()).sum();
+        let max_scroll = est_total.saturating_sub(inner_height);
+        let scroll_y: usize = if app.agent_auto_scroll {
+            max_scroll
+        } else {
+            (app.agent_scroll as usize).min(max_scroll)
+        };
+
+        let (start, end) = visible_message_range(messages, scroll_y);
+        let skipped_rows: usize = messages[..start]
             .iter()
-            .flat_map(|msg| msg.to_lines(theme, panel_state, inner_width))
-            .collect()
+            .map(|m| m.estimate_lines())
+            .sum();
+
+        // Phase B: expensive to_lines() only on the visible slice.
+        let lines: Vec<Line<'static>> = messages[start..end]
+            .iter()
+            .flat_map(|msg| msg.to_lines(theme, panel_state, to_lines_width))
+            .collect();
+
+        (lines, skipped_rows)
     };
 
     let conv_block = Block::default()
@@ -143,48 +215,23 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         .borders(Borders::ALL)
         .border_style(theme.focused_border_style(app.focused == Panel::Agent));
 
-    // Compute the vertical scroll offset for the chat Paragraph.
-    // Two modes:
-    //   - auto-scroll ON: pin the scroll to the last line of content
-    //     so freshly-streamed events stay visible without the user
-    //     having to scroll. This is what claude-code does.
-    //   - auto-scroll OFF: honour `agent_scroll` (set by j/k/PgUp/
-    //     PgDown/End). The user can browse history freely.
+    // The Paragraph's scroll offset must be relative to the rendered
+    // slice (which starts at message `start`, not message 0). We
+    // subtract the estimated rows occupied by skipped messages.
     //
-    // The Paragraph's inner height is `area.height - 2` (one row of
-    // border on top, one on bottom). If the content fits inside the
-    // viewport, scrolling is a no-op.
-    //
-    // IMPORTANT: `Paragraph::scroll.y` is interpreted by the renderer
-    // (see `WordWrapper::next_line` in ratatui's `paragraph.rs`) as an
-    // offset into the **post-wrap** line stream — i.e. it counts
-    // wrapped rows, not source `Line` rows. Using `rendered_lines.len()`
-    // here would under-count whenever any source `Line` is wider than
-    // the viewport (e.g. a long Thinking block, a long URL, an
-    // untruncated tool result), causing the auto-scroll pin to stop
-    // short of the true bottom and hide the latest streamed events.
-    //
-    // We compute the post-wrap total ourselves by summing, for each
-    // source `Line`, `ceil(grapheme_width / inner_width)`. This is
-    // character-based (not word-based) and is therefore an *upper
-    // bound* on the row count `WordWrapper` would produce — word wrap
-    // can never insert more breaks than naive char wrap. That is the
-    // direction we want: a slight over-estimate of `max_scroll` is
-    // safe (extra empty rows at the top are invisible), but an
-    // under-estimate hides real content.
-    let inner_height = chunks[0].height.saturating_sub(2) as usize;
+    // `estimate_lines()` counts `Line` objects, not post-wrap visual
+    // rows, so `skipped_rows` is an *under*-estimate of the actual
+    // visual rows skipped. This means `paragraph_scroll` may be
+    // slightly *over*-estimated — a few extra lines at the top are
+    // shown, clipped by the viewport. The safe direction.
     let inner_width = chunks[0].width.saturating_sub(2) as usize;
-    let wrapped_total = wrapped_line_count(&rendered_lines, inner_width);
-    let max_scroll = wrapped_total.saturating_sub(inner_height);
-    let scroll_y = if app.agent_auto_scroll {
-        max_scroll as u16
-    } else {
-        app.agent_scroll.min(max_scroll as u16)
-    };
+    let rendered_max = wrapped_line_count(&rendered_lines, inner_width);
+    let paragraph_scroll = (skipped_rows as usize).min(rendered_max) as u16;
+
     let conv = Paragraph::new(rendered_lines)
         .block(conv_block)
         .wrap(Wrap { trim: false })
-        .scroll((scroll_y, 0));
+        .scroll((paragraph_scroll, 0));
     f.render_widget(conv, chunks[0]);
 
     let status_line = if app.providers.is_empty() {
@@ -286,5 +333,67 @@ mod wrap_tests {
         let lines = vec![Line::from("ok"), Line::from(""), Line::from("z".repeat(25))];
         // 1 (ok) + 1 (empty) + ceil(25/10) = 1+1+3 = 5
         assert_eq!(wrapped_line_count(&lines, 10), 5);
+    }
+
+    // ---- Viewport culling tests ----
+
+    #[test]
+    fn short_history_renders_all() {
+        let messages: Vec<ChatMessage> = (0..30).map(|_| ChatMessage::Divider).collect();
+        let (start, end) = visible_message_range(&messages, 0);
+        assert_eq!(start, 0);
+        assert_eq!(end, 30);
+    }
+
+    #[test]
+    fn long_history_at_top_renders_first_batch() {
+        let messages: Vec<ChatMessage> = (0..200).map(|_| ChatMessage::Divider).collect();
+        let (start, end) = visible_message_range(&messages, 0);
+        assert_eq!(start, 0);
+        assert_eq!(end, RENDER_ALL_THRESHOLD);
+    }
+
+    #[test]
+    fn long_history_at_bottom_includes_last_messages() {
+        let messages: Vec<ChatMessage> = (0..200).map(|_| ChatMessage::Divider).collect();
+        let est_total: usize = messages.iter().map(|m| m.estimate_lines()).sum();
+        let max_scroll = est_total.saturating_sub(24);
+        let (_start, end) = visible_message_range(&messages, max_scroll);
+        assert_eq!(end, 200); // always includes the last message
+    }
+
+    #[test]
+    fn visible_range_never_exceeds_threshold() {
+        let messages: Vec<ChatMessage> = (0..500).map(|_| ChatMessage::Divider).collect();
+        for scroll in [0, 100, 250, 499] {
+            let (start, end) = visible_message_range(&messages, scroll);
+            assert!(
+                end - start <= RENDER_ALL_THRESHOLD,
+                "scroll={scroll}: range [{start},{end}) exceeds threshold",
+            );
+        }
+    }
+
+    #[test]
+    fn empty_history_returns_empty_range() {
+        let messages: Vec<ChatMessage> = vec![];
+        let (start, end) = visible_message_range(&messages, 0);
+        assert_eq!(start, 0);
+        assert_eq!(end, 0);
+    }
+
+    #[test]
+    fn threshold_boundary_exact() {
+        let messages: Vec<ChatMessage> = (0..RENDER_ALL_THRESHOLD).map(|_| ChatMessage::Divider).collect();
+        let (_start, end) = visible_message_range(&messages, 0);
+        assert_eq!(end, RENDER_ALL_THRESHOLD);
+    }
+
+    #[test]
+    fn one_over_threshold_triggers_culling() {
+        let messages: Vec<ChatMessage> = (0..RENDER_ALL_THRESHOLD + 1).map(|_| ChatMessage::Divider).collect();
+        let (start, end) = visible_message_range(&messages, 0);
+        assert_eq!(start, 0);
+        assert_eq!(end, RENDER_ALL_THRESHOLD);
     }
 }
