@@ -268,12 +268,15 @@ pub struct App {
     /// streaming. Displayed in the status bar so the user sees how
     /// many tokens the LLM has generated so far.
     pub agent_usage_tokens: Option<u64>,
-    /// Vertical scroll offset (in lines) for the Agent chat panel.
-    /// 0 = top. Used together with `agent_auto_scroll`: when auto-scroll
-    /// is on, the renderer pins the scroll to the bottom on every frame
-    /// so newly-streamed events stay visible without the user having
-    /// to scroll. Manual `j`/`k`/`PageUp`/`PageDown` flips auto-scroll
-    /// off and lets the user browse history.
+    /// Vertical scroll offset (in **post-wrap visual rows**) for the
+    /// Agent chat panel. 0 = top. Used together with
+    /// `agent_auto_scroll`: when auto-scroll is on, the renderer
+    /// pins the scroll to the bottom on every frame so newly-streamed
+    /// events stay visible without the user having to scroll.
+    /// Manual `j`/`k`/`PageUp`/`PageDown` flips auto-scroll off and
+    /// lets the user browse history. The unit is post-wrap visual
+    /// rows (not pre-wrap source `Line`s) so it matches the unit
+    /// `Paragraph::scroll.y` consumes.
     pub agent_scroll: u16,
     /// True when the chat panel should follow the bottom of the
     /// stream. Disabled the moment the user scrolls up, re-enabled
@@ -335,25 +338,27 @@ pub struct App {
     pub message_version: u64,
 
     /// Cached rendered lines for the agent chat panel.
-    /// `(message_version, range_start, range_end, lines)`. Avoids
-    /// re-running `to_lines()` on every frame when messages haven't
-    /// changed.
-    pub cached_agent_lines: Option<(u64, usize, usize, Vec<Line<'static>>)>,
+    /// `(message_version, lines)`. Avoids re-running `to_lines()` on
+    /// every frame when messages haven't changed. The renderer now
+    /// always flattens the full history (no message-window culling),
+    /// so the start/end indices are no longer needed in the key.
+    pub cached_agent_lines: Option<(u64, Vec<Line<'static>>)>,
 
-    /// Cached per-message post-wrap row counts for the agent chat panel.
-    /// `(message_version, inner_width, per_message_wrapped_rows)`.
+    /// Cached total post-wrap visual row count for the agent chat
+    /// panel: `(message_version, inner_width_u16, total_visual_rows)`.
     ///
-    /// Invalidates on either a new `message_version` (history changed)
-    /// or a different `inner_width` (panel resize), since wrap layout
-    /// depends on the viewport width. Used by the renderer to:
-    ///   1. Pick the visible message window (cull off-screen messages).
-    ///   2. Compute the total wrapped-row count of the **full** chat
-    ///      history for `max_scroll` / auto-pin math, even when only
-    ///      a small window is rendered.
-    ///   3. Translate `app.agent_scroll` (global wrapped-row offset)
-    ///      into the local `Paragraph::scroll.y` (offset within the
-    ///      rendered window).
-    pub cached_estimates: Option<(u64, usize, Vec<usize>)>,
+    /// This is the exact value `Paragraph::line_count(width)` would
+    /// return when called on the full history. Caching it avoids
+    /// walking `WordWrapper` twice per frame (once for counting, once
+    /// for rendering) — the count result is identical in both passes.
+    ///
+    /// Invalidates on a new `message_version` (history changed) or
+    /// a different `inner_width` (panel resize), since wrap layout
+    /// depends on viewport width. The renderer uses this to compute
+    /// `max_scroll = total_visual_rows.saturating_sub(inner_height)`
+    /// so the auto-scroll pin and the user-driven `j`/`k` scroll
+    /// both bottom out at the actual last visible row.
+    pub cached_estimates: Option<(u64, u16, usize)>,
 
     /// Pending key for two-key vim motions (e.g. `gg` = first `g`
     /// sets this, second `g` consumes it and jumps to top).
