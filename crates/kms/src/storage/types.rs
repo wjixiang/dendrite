@@ -51,7 +51,7 @@ pub struct Knowledge {
     pub content: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TargetType {
     Group,
     Knowledge,

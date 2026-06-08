@@ -10,6 +10,12 @@ pub trait EntityDiagnosticRule: Send + Sync {
     fn name(&self) -> &str;
 }
 
+fn format_entity_location(name: &str) -> String {
+    // entity 诊断的 location 没有路径，只有一个实体名。
+    // 追加 [entity] 标记，与 index/knowledge 诊断保持一致的区分风格。
+    format!("{} [entity]", name)
+}
+
 // ── Rules ───────────────────────────────────────────────────────
 
 pub struct NoNomenclature;
@@ -22,7 +28,7 @@ impl EntityDiagnosticRule for NoNomenclature {
                 code_description: Some(CodeDescription {
                     href: "kms://diagnostics/entity/no-nomenclature".to_string(),
                 }),
-                location: "(unnamed entity)".to_string(),
+                location: format_entity_location("(unnamed entity)"),
                 severity: Severity::Error,
                 message: "实体没有任何命名".to_string(),
                 suggested_actions: vec![
@@ -55,7 +61,7 @@ impl EntityDiagnosticRule for EmptyDefinition {
                 code_description: Some(CodeDescription {
                     href: "kms://diagnostics/entity/empty-definition".to_string(),
                 }),
-                location: name.to_string(),
+                location: format_entity_location(name),
                 severity: Severity::Warning,
                 message: "实体定义为空".to_string(),
                 suggested_actions: vec![
@@ -88,7 +94,7 @@ impl EntityDiagnosticRule for MissingZhNomenclature {
                 code_description: Some(CodeDescription {
                     href: "kms://diagnostics/entity/missing-zh-nomenclature".to_string(),
                 }),
-                location: name.to_string(),
+                location: format_entity_location(name),
                 severity: Severity::Hint,
                 message: "实体缺少中文命名".to_string(),
                 suggested_actions: vec![

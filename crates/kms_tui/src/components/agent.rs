@@ -62,11 +62,7 @@ const RENDER_ALL_THRESHOLD: usize = 50;
 ///
 /// When the total message count is small (below `RENDER_ALL_THRESHOLD`),
 /// returns `(0, total)` — no culling, identical to the old behavior.
-fn visible_message_range(
-    estimates: &[usize],
-    scroll_y: usize,
-    total: usize,
-) -> (usize, usize) {
+fn visible_message_range(estimates: &[usize], scroll_y: usize, total: usize) -> (usize, usize) {
     if total <= RENDER_ALL_THRESHOLD {
         return (0, total);
     }
@@ -90,6 +86,35 @@ fn visible_message_range(
     (start, end)
 }
 
+/// Translate a **global** wrapped-row scroll offset (an offset into
+/// the whole chat history) into the **local** `Paragraph::scroll.y`
+/// for the window `[start, end)` that we actually render.
+///
+/// `Paragraph::scroll.y` is an offset into the rendered `Vec<Line>`
+/// slice — NOT into the original history — so when we cull off-screen
+/// messages we must subtract the rows that live above the window.
+///
+/// The result is **not clamped to the window's max**: callers want to
+/// let the user scroll past the bottom of the history (the panel goes
+/// blank), so any clamp belongs at the call site, not here. Underflow
+/// is still guarded by `saturating_sub`.
+///
+/// `counts` is the per-message post-wrap row count for the full
+/// history; `start..end` is the visible window picked by
+/// `visible_message_range`; `inner_height` is the viewport height
+/// (chat panel minus borders).
+fn translate_scroll(
+    counts: &[usize],
+    start: usize,
+    _end: usize,
+    global_scroll: usize,
+    _inner_height: usize,
+) -> usize {
+    let rows_before_window: usize = counts[..start].iter().sum();
+    global_scroll.saturating_sub(rows_before_window)
+}
+
+/// Main function of Agent message rendering
 pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -120,10 +145,12 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         )
     };
 
-    let rendered_lines: Vec<Line<'static>> =
-        if app.providers.is_empty() {
+    let inner_height = chunks[0].height.saturating_sub(2) as usize;
+    let inner_width = chunks[0].width.saturating_sub(2) as usize;
+
+    let (rendered_lines, scroll_y): (Vec<Line<'static>>, u16) = if app.providers.is_empty() {
         // Empty-pool first-run hint instead of the normal chat history.
-        vec![
+        let lines = vec![
             Line::from(Span::styled(
                 "  No LLM providers configured.",
                 Style::default()
@@ -174,81 +201,96 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 "  with different API keys) are supported to fan out TPM.",
                 Style::default().fg(theme.text_muted),
             )),
-        ]
+        ];
+        (lines, 0)
     } else {
         let msg_version = app.message_version;
-        let msg_len = {
-            let msgs = app.agent_messages();
-            msgs.len()
-        };
-        let inner_height = chunks[0].height.saturating_sub(2) as usize;
+        let msg_len = app.agent_messages().len();
 
-        // --- Phase A: compute visible range, using cached estimates ---
-        let (start, end) = if msg_len > RENDER_ALL_THRESHOLD {
-            // Check if cached estimates are still valid.
-            let estimates_valid = matches!(
-                &app.cached_estimates,
-                Some((ver, ests)) if *ver == msg_version && ests.len() == msg_len
-            );
-
-            if !estimates_valid {
+        // --- Refresh the per-message wrapped-row cache ---
+        //
+        // Keyed by (message_version, inner_width): the wrap layout
+        // changes on resize, so the post-wrap row count for a given
+        // message is only stable while the width is unchanged. We
+        // always cache counts for the **whole** history (not just the
+        // visible window) because the scroll math below needs the
+        // global total, not the window-local one.
+        let cache_fresh = matches!(
+            &app.cached_estimates,
+            Some((ver, w, counts)) if *ver == msg_version
+                && *w == inner_width
+                && counts.len() == msg_len
+        );
+        if !cache_fresh {
+            let counts: Vec<usize> = {
                 let msgs = app.agent_messages();
-                let ests: Vec<usize> = msgs.iter().map(|m| m.estimate_lines()).collect();
-                app.cached_estimates = Some((msg_version, ests));
-            }
+                msgs.iter()
+                    .map(|m| wrapped_line_count(&m.to_lines(theme), inner_width))
+                    .collect()
+            };
+            app.cached_estimates = Some((msg_version, inner_width, counts));
+        }
+        // Snapshot the counts so the subsequent &mut app borrows for
+        // the line cache don't conflict with the immutable borrow of
+        // the count cache.
+        let counts: Vec<usize> = app.cached_estimates.as_ref().unwrap().2.clone();
+        let total_rows: usize = counts.iter().sum();
+        let global_max_scroll = total_rows.saturating_sub(inner_height);
 
-            let ests = app.cached_estimates.as_ref().unwrap().1.as_slice();
-            let est_total: usize = ests.iter().sum();
-            let est_max = est_total.saturating_sub(inner_height);
-            let rough_scroll = (app.agent_scroll as usize).min(est_max);
-            visible_message_range(ests, rough_scroll, msg_len)
+        // The actual global scroll target for this frame, in post-wrap
+        // row units. Auto-scroll pins to the global bottom; otherwise
+        // we forward the user's `agent_scroll` verbatim — including
+        // values past `global_max_scroll`, which lets the user scroll
+        // off the bottom into blank space (intentional: no clamp here).
+        let global_scroll = if app.agent_auto_scroll {
+            global_max_scroll
         } else {
-            app.cached_estimates = None;
-            if app.agent_auto_scroll {
-                let tail_start = msg_len.saturating_sub(RENDER_ALL_THRESHOLD);
-                (tail_start, msg_len)
-            } else {
-                (0, msg_len)
-            }
+            app.agent_scroll as usize
         };
 
-        // --- Phase B: render visible messages, using cached lines ---
+        // --- Pick the visible message window around the actual scroll target ---
+        let (start, end) = if msg_len > RENDER_ALL_THRESHOLD {
+            visible_message_range(&counts, global_scroll, msg_len)
+        } else {
+            (0, msg_len)
+        };
+
+        // --- Render visible messages, with line cache ---
         let cache_hit = matches!(
             &app.cached_agent_lines,
             Some((ver, s, e, _lines)) if *ver == msg_version && *s == start && *e == end
         );
-
-        if cache_hit {
-            // Cache hit — clone is much cheaper than re-running to_lines().
+        let lines: Vec<Line<'static>> = if cache_hit {
             app.cached_agent_lines.as_ref().unwrap().3.clone()
         } else {
-            let msgs = app.agent_messages();
-            let lines: Vec<Line<'static>> = msgs[start..end]
-                .iter()
-                .flat_map(|msg| msg.to_lines(theme))
-                .collect();
+            let lines: Vec<Line<'static>> = {
+                let msgs = app.agent_messages();
+                msgs[start..end]
+                    .iter()
+                    .flat_map(|msg| msg.to_lines(theme))
+                    .collect()
+            };
             app.cached_agent_lines = Some((msg_version, start, end, lines.clone()));
             lines
-        }
+        };
+
+        // --- Translate global scroll into a local Paragraph offset ---
+        //
+        // `lines` only contains the windowed slice [start, end), but
+        // `Paragraph::scroll.y` is an offset into THAT slice — not into
+        // the whole history. `translate_scroll` subtracts the rows
+        // that live above the window and clamps to the window's own
+        // max so a stale scroll value (or a window that doesn't fully
+        // cover the viewport at the very bottom) can't push content
+        // off-screen.
+        let local_scroll = translate_scroll(&counts, start, end, global_scroll, inner_height);
+        (lines, local_scroll.min(u16::MAX as usize) as u16)
     };
 
     let conv_block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(theme.focused_border_style(app.focused == Panel::Agent));
-
-    // Scroll computation uses wrapped_line_count on the RENDERED
-    // lines — same as the original code.  This gives the correct
-    // post-wrap visual row count that Paragraph expects.
-    let inner_height = chunks[0].height.saturating_sub(2) as usize;
-    let inner_width = chunks[0].width.saturating_sub(2) as usize;
-    let rendered_max = wrapped_line_count(&rendered_lines, inner_width);
-    let max_scroll = rendered_max.saturating_sub(inner_height);
-    let scroll_y = if app.agent_auto_scroll {
-        max_scroll as u16
-    } else {
-        app.agent_scroll.min(max_scroll as u16)
-    };
 
     let conv = Paragraph::new(rendered_lines)
         .block(conv_block)
@@ -420,5 +462,101 @@ mod wrap_tests {
         let (start, end) = visible_message_range(&estimates, 0, n);
         assert_eq!(start, 0);
         assert_eq!(end, RENDER_ALL_THRESHOLD);
+    }
+
+    // ---- Scroll-translation tests (regression: long history bottom) ----
+
+    /// Without culling (window covers the whole history), the local
+    /// Paragraph scroll must equal the global scroll. Anything else
+    /// would visibly shift the chat for short sessions.
+    #[test]
+    fn translate_no_culling_passes_scroll_through() {
+        let counts = vec![5usize; 10]; // 10 messages × 5 rows = 50
+        let local = translate_scroll(&counts, 0, 10, 30, 20);
+        assert_eq!(local, 30);
+    }
+
+    /// When the window starts at the top of history (start = 0) there
+    /// are no rows above the window to subtract, so local == global.
+    #[test]
+    fn translate_window_at_top_is_identity() {
+        let counts = vec![5usize; 100];
+        let local = translate_scroll(&counts, 0, 50, 100, 24);
+        assert_eq!(local, 100);
+    }
+
+    /// **Bug fix guard**: in culling mode, the window's `start` is
+    /// not at message 0, so `Paragraph::scroll.y` must be
+    /// `global_scroll - rows_before_window`. The pre-fix code passed
+    /// `global_scroll` directly into Paragraph, which stranded the
+    /// user somewhere in the middle of the window.
+    #[test]
+    fn translate_culled_window_subtracts_prefix_rows() {
+        let counts = vec![5usize; 100]; // total 500 rows
+        // Window: messages [40, 90) → rows_before_window = 200.
+        // Global scroll at row 250.
+        let local = translate_scroll(&counts, 40, 90, 250, 24);
+        assert_eq!(local, 50);
+    }
+
+    /// When auto-scroll pins to the global bottom, the window covers
+    /// the tail and the local offset lands at the window's last
+    /// `inner_height` rows.
+    #[test]
+    fn translate_at_global_bottom_lands_at_window_bottom() {
+        let counts = vec![5usize; 100];
+        let total: usize = counts.iter().sum(); // 500
+        let inner_height = 24;
+        let global_scroll = total - inner_height; // 476
+        // Tail window: [50, 100) → rows_before_window = 250.
+        let local = translate_scroll(&counts, 50, 100, global_scroll, inner_height);
+        // 476 - 250 = 226.
+        assert_eq!(local, 226);
+    }
+
+    /// **No clamp** at the function boundary: callers explicitly want
+    /// to let the user scroll past the bottom (the Paragraph then
+    /// renders blank rows). Confirms we forward the raw arithmetic
+    /// regardless of how far past the window the scroll goes.
+    #[test]
+    fn translate_overshoot_is_not_clamped() {
+        let counts = vec![5usize; 60];
+        let local = translate_scroll(&counts, 0, 50, 10_000, 24);
+        // 10_000 - 0 = 10_000; window's local_max would have been 226,
+        // but we no longer clamp.
+        assert_eq!(local, 10_000);
+    }
+
+    /// Underflow is still guarded by `saturating_sub`: a global
+    /// scroll below `rows_before_window` (transient state during a
+    /// key burst) must saturate at 0 rather than wrap around.
+    #[test]
+    fn translate_undershoot_saturates_at_zero() {
+        let counts = vec![5usize; 60];
+        // Window starts at message 30 → 150 rows above.
+        let local = translate_scroll(&counts, 30, 60, 50, 24);
+        assert_eq!(local, 0);
+    }
+
+    /// Variable-height messages (the realistic case): the prefix sum
+    /// must be exact, not approximated by message count × average.
+    #[test]
+    fn translate_variable_height_messages() {
+        let counts = vec![3usize, 7, 12, 4, 9]; // total = 35
+        // Window: [2, 5) → rows_before_window = 3 + 7 = 10.
+        let local = translate_scroll(&counts, 2, 5, 22, 8);
+        // 22 - 10 = 12 (no clamp).
+        assert_eq!(local, 12);
+    }
+
+    /// Empty window (start == end) and zero inner height shouldn't
+    /// panic. Without a window-max clamp the call now returns the
+    /// raw `global - rows_before` — `Paragraph` will render blank.
+    #[test]
+    fn translate_empty_window_does_not_panic() {
+        let counts = vec![3usize, 7, 12];
+        let local = translate_scroll(&counts, 1, 1, 5, 0);
+        // rows_before_window = 3; 5 - 3 = 2 (no clamp).
+        assert_eq!(local, 2);
     }
 }

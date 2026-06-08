@@ -340,10 +340,20 @@ pub struct App {
     /// changed.
     pub cached_agent_lines: Option<(u64, usize, usize, Vec<Line<'static>>)>,
 
-    /// Cached per-message line-count estimates (from `estimate_lines()`).
-    /// `(message_version, per_message_counts)`. Avoids the O(n) scan
-    /// with JSON parsing on every frame when messages haven't changed.
-    pub cached_estimates: Option<(u64, Vec<usize>)>,
+    /// Cached per-message post-wrap row counts for the agent chat panel.
+    /// `(message_version, inner_width, per_message_wrapped_rows)`.
+    ///
+    /// Invalidates on either a new `message_version` (history changed)
+    /// or a different `inner_width` (panel resize), since wrap layout
+    /// depends on the viewport width. Used by the renderer to:
+    ///   1. Pick the visible message window (cull off-screen messages).
+    ///   2. Compute the total wrapped-row count of the **full** chat
+    ///      history for `max_scroll` / auto-pin math, even when only
+    ///      a small window is rendered.
+    ///   3. Translate `app.agent_scroll` (global wrapped-row offset)
+    ///      into the local `Paragraph::scroll.y` (offset within the
+    ///      rendered window).
+    pub cached_estimates: Option<(u64, usize, Vec<usize>)>,
 
     /// Pending key for two-key vim motions (e.g. `gg` = first `g`
     /// sets this, second `g` consumes it and jumps to top).

@@ -3,13 +3,60 @@ use std::collections::HashMap;
 use crate::Storage;
 use crate::diagnostics::knowledge_rules::{NestedKnowledge, VagueTitle};
 use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
-use crate::storage::types::Index;
+use crate::storage::types::{Index, TargetType};
 use uuid::Uuid;
 
 use super::entity_rules::EntityDiagnosticRule;
 use super::index_rules::IndexDiagnosticRule;
 use super::knowledge_rules::KnowledgeDiagnosticRule;
 use super::{CodeDescription, Diagnostic, Severity};
+
+// ── Location 文本渲染 ────────────────────────────────────────────
+
+/// location 路径"最终指向"的种类，用于在 leaf 上追加文本标记，
+/// 让 Agent 单从 location 字符串就能区分指向的是 index 节点还是 knowledge 节点。
+#[derive(Clone, Copy)]
+enum LocationLeafKind {
+    /// 最终指向一个 index 节点（Group 分组或 Knowledge 链接都算 index 节点）。
+    /// 叶子是 Group 时不加标记；叶子是 Knowledge-targeting index 时仍标注 [knowledge]，
+    /// 因为此时叶子**承载**一条 knowledge，从 agent 视角与 Group 是不同语义。
+    Index,
+    /// 最终指向一条 knowledge 内容（诊断目标是 knowledge 而非 index）。
+    Knowledge,
+    /// 最终指向一个 entity。
+    Entity,
+}
+
+fn leaf_kind_from_target(target_type: TargetType) -> LocationLeafKind {
+    match target_type {
+        TargetType::Group => LocationLeafKind::Index,
+        TargetType::Knowledge => LocationLeafKind::Knowledge,
+    }
+}
+
+/// 在 location 字符串的"叶子"（最后一个 ` > ` 分隔之后的片段）追加文本标记。
+/// 这样 Agent 看到 `Root > 心血管疾病 > 冠心病 [knowledge]` 就能立刻知道
+/// "冠心病" 实际是一条挂载的知识（target_type=knowledge），
+/// 而 `Root > 心血管疾病 > 冠心病`（无标记）则是普通的 Group 索引节点。
+fn format_location_with_leaf_marker(path: &str, leaf_kind: LocationLeafKind) -> String {
+    let suffix = match leaf_kind {
+        LocationLeafKind::Index => "",
+        LocationLeafKind::Knowledge => " [knowledge]",
+        LocationLeafKind::Entity => " [entity]",
+    };
+    if suffix.is_empty() {
+        return path.to_string();
+    }
+    // 把标记追加到最后一个 ` > ` 之后；如果 path 中没有 ` > `（如 orphan 情况），
+    // 就直接追加在末尾。
+    match path.rfind(" > ") {
+        Some(idx) => {
+            let (prefix, last) = path.split_at(idx + " > ".len());
+            format!("{}{}{}", prefix, last, suffix)
+        }
+        None => format!("{}{}", path, suffix),
+    }
+}
 
 // ── Index ────────────────────────────────────────────────────────
 
@@ -45,8 +92,15 @@ async fn run_index_diagnostics(
         } else {
             current_path = vec!["Root".to_string()];
         }
-        let location = current_path.join(" > ");
-        path_map.insert(node.id, location.clone());
+        // path_map 存原始路径（不带标记），供 knowledge 诊断构建 location 时复用，
+        // 避免重复叠加 [knowledge] 标记。
+        let raw_path = current_path.join(" > ");
+        path_map.insert(node.id, raw_path.clone());
+        // 诊断 location 追加 leaf 标记，区分 index 节点 vs knowledge 节点。
+        let location = format_location_with_leaf_marker(
+            &raw_path,
+            leaf_kind_from_target(node.target_type),
+        );
 
         let children = children_map.get(&Some(node.id)).cloned().unwrap_or_default();
 
@@ -116,10 +170,11 @@ async fn run_knowledge_diagnostics(
         .map_err(|e| e.to_string())?;
 
     for k in all_knowledges {
-        let location = knowledge_location
+        let raw_location = knowledge_location
             .get(&k.id)
             .cloned()
             .unwrap_or_else(|| format!("(orphan) {}", k.title));
+        let location = format_location_with_leaf_marker(&raw_location, LocationLeafKind::Knowledge);
 
         for rule in &rules {
             if let Some(mut d) = rule.check(&k) {
@@ -129,10 +184,11 @@ async fn run_knowledge_diagnostics(
         }
 
         if orphan_titles.contains(&k.title) {
-            let orphan_location = knowledge_location
+            let orphan_raw = knowledge_location
                 .get(&k.id)
                 .cloned()
                 .unwrap_or_else(|| format!("(orphan) {}", k.title));
+            let orphan_location = format_location_with_leaf_marker(&orphan_raw, LocationLeafKind::Knowledge);
             issues.push(Diagnostic {
                 code: "knowledge.orphan".to_string(),
                 code_description: Some(CodeDescription {
