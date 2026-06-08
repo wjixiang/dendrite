@@ -6,8 +6,96 @@
 
 use std::sync::Arc;
 
-use agentik_core::tools::ToolRegistration;
+use agentik_core::context::{AgentContext, ContextChanges};
+use agentik_core::tools::{ToolFunction, ToolRegistration};
 use agentik_sdk::model::model_pool::ModelPool;
+use serde_json::Value;
+
+/// Tools that start with the `kms_` prefix but are read-only.
+///
+/// These do not mutate persistent state, so they must not trigger
+/// post-mutation context refresh.
+const READONLY_KMS_TOOLS: &[&str] = &[
+    "kms_search_entity",
+    "kms_navigate",
+    "kms_get_entity_knowledge",
+];
+
+/// Returns `true` when a tool is a KMS mutation tool (i.e. starts with the
+/// `kms_` prefix and is *not* in [`READONLY_KMS_TOOLS`]).
+pub fn is_mutation_tool(tool_name: &str) -> bool {
+    tool_name.starts_with("kms_") && !READONLY_KMS_TOOLS.contains(&tool_name)
+}
+
+// ---------------------------------------------------------------------------
+// Mutation-refresh wrapper
+// ---------------------------------------------------------------------------
+
+/// Wraps a [`ToolFunction`] so that after execution it triggers a context
+/// refresh via [`AgentContext::write`].  Used to keep the agent's
+/// location and diagnostics in sync after mutation tools modify the KMS.
+struct MutationRefreshTool {
+    inner: Box<dyn ToolFunction>,
+    ctx: Arc<dyn AgentContext>,
+}
+
+#[async_trait::async_trait]
+impl ToolFunction for MutationRefreshTool {
+    async fn execute(
+        &self,
+        input: Value,
+    ) -> Result<agentik_core::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+        let result = self.inner.execute(input).await?;
+        // Trigger context refresh.  Fire-and-forget errors — a context
+        // refresh failure must not break the tool execution result.
+        let _ = self.ctx.write(ContextChanges::default()).await;
+        Ok(result)
+    }
+
+    fn timeout_seconds(&self) -> u64 {
+        self.inner.timeout_seconds()
+    }
+
+    fn definition(&self) -> agentik_types::Tool {
+        self.inner.definition()
+    }
+}
+
+/// Minimal no-op tool used as a temporary placeholder during
+/// `std::mem::replace` when swapping out the inner implementation.
+struct NoopTool;
+
+#[async_trait::async_trait]
+impl ToolFunction for NoopTool {
+    async fn execute(
+        &self,
+        _input: Value,
+    ) -> Result<agentik_core::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("NoopTool should never be executed")
+    }
+}
+
+/// Wrap mutation tools so they trigger a context refresh after execution.
+fn wrap_mutation_tools(
+    tools: Vec<ToolRegistration>,
+    ctx: Arc<dyn AgentContext>,
+) -> Vec<ToolRegistration> {
+    tools
+        .into_iter()
+        .map(|mut reg| {
+            if is_mutation_tool(&reg.definition.name) {
+                let ctx = ctx.clone();
+                let inner = std::mem::replace(&mut reg.implementation, Box::new(NoopTool));
+                reg.implementation = Box::new(MutationRefreshTool { inner, ctx });
+            }
+            reg
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Sub-module declarations
+// ---------------------------------------------------------------------------
 
 mod kms_add_nomenclature;
 mod kms_create_entity;
@@ -36,7 +124,13 @@ mod kms_update_knowledge;
 mod kms_update_nomenclature;
 mod kms_view_local;
 
-pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
+// ---------------------------------------------------------------------------
+// Aggregate registration functions
+// ---------------------------------------------------------------------------
+
+/// Raw tool list (no mutation wrapping).  Used internally and as the
+/// basis for [`registrations`] and [`parallel_registrations`].
+fn raw_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
     vec![
         kms_create_entity::registration(svc.clone()),
         kms_update_entity::registration(svc.clone()),
@@ -63,6 +157,18 @@ pub fn registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
     ]
 }
 
+/// Full write tool set with mutation-refresh wrapping.
+///
+/// Every mutation tool will trigger a `ctx.write()` after execution so
+/// the agent loop picks up updated location and diagnostics.
+pub fn registrations(
+    svc: Arc<kms::KmsService>,
+    ctx: Arc<dyn AgentContext>,
+) -> Vec<ToolRegistration> {
+    wrap_mutation_tools(raw_registrations(svc), ctx)
+}
+
+/// Read-only tool set — no wrapping needed.
 pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
     vec![
         kms_search_entity::registration(svc.clone()),
@@ -77,31 +183,36 @@ pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration
     ]
 }
 
+/// Configuration bundle produced by the sub-agent factory for parallel dispatch.
+pub struct SubAgentConfig {
+    pub context: Arc<dyn AgentContext>,
+    pub system_prompt: &'static str,
+}
+
 /// Build the tool set for the parallel compose agent.
 ///
-/// Includes every regular KMS tool plus:
+/// Includes every regular KMS tool (with mutation wrapping) plus:
 /// - `kms_parallel_dispatch` (the fan-out orchestrator)
-/// - `kms_merge_subtree` (for staged merges the agent wants to do by hand)
+/// - `kms_merge_subtree` (already included in raw_registrations)
 ///
 /// `sub_context_factory` is invoked once per spawned sub-agent to
-/// construct its `AgentContext` from a dedicated `KmsService` whose
-/// pointer is pinned to the sub-agent's staging area. This indirection
-/// lets the caller (typically the `agent-compose` crate) decide
-/// exactly what prompt/tools the sub-agents get.
+/// produce a [`SubAgentConfig`] containing the sub-agent's context and
+/// system prompt.
 ///
 /// `process_manager` is the TUI-owned singleton that manages sub-agent
 /// lifecycles. `agent_titles` is a shared map that maps spawned agent
 /// UUIDs to human-readable titles for the TUI's agent status panel.
 pub fn parallel_registrations(
     svc: Arc<kms::KmsService>,
+    ctx: Arc<dyn AgentContext>,
     pool: Arc<ModelPool>,
     sub_context_factory: Arc<
-        dyn Fn(Arc<kms::KmsService>) -> Arc<dyn agentik_core::context::AgentContext> + Send + Sync,
+        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> SubAgentConfig + Send + Sync,
     >,
     process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<std::collections::HashMap<uuid::Uuid, String>>>,
 ) -> Vec<ToolRegistration> {
-    let mut tools = registrations(svc.clone());
+    let mut tools = raw_registrations(svc.clone());
     tools.push(kms_parallel_dispatch::registration(
         svc,
         pool,
@@ -109,6 +220,5 @@ pub fn parallel_registrations(
         process_manager,
         agent_titles,
     ));
-    tools
+    wrap_mutation_tools(tools, ctx)
 }
-

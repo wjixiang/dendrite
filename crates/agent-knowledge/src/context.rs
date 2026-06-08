@@ -1,75 +1,53 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentik_core::context::{AgentContext, ContextDiagnostic, ContextSnapshot};
+use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
-use dendrite_tools::ToolRegistration;
-use uuid::Uuid;
-
-use crate::prompt::KNOWLEDGE_RETRIEVAL_PROMPT;
+use serde_json::json;
 
 pub struct KnowledgeContext {
     kms: Arc<kms::KmsService>,
+    state: std::sync::RwLock<ContextSnapshot>,
 }
 
 impl KnowledgeContext {
     pub fn new(kms: Arc<kms::KmsService>) -> Self {
-        Self { kms }
+        Self {
+            kms,
+            state: std::sync::RwLock::new(ContextSnapshot::default()),
+        }
     }
 
     pub async fn from_path(db_path: &str) -> Result<Self, String> {
         let svc = kms::KmsService::new(db_path).await?;
         Ok(Self::new(Arc::new(svc)))
     }
+
+    /// Initialize context with a root local view.
+    /// Must be called before the agent starts so the local view is
+    /// injected once at startup (version 0 → 1). Since `write()` is a
+    /// no-op for this context, the version never changes again and
+    /// the view is never re-injected.
+    pub async fn initialize(&self) -> Result<(), String> {
+        let view = self.kms.get_local_view_by_path("/").await?;
+        let mut data = HashMap::new();
+        data.insert("local_view".into(), json!(render_local_view(&view)));
+        let mut guard = self.state.write().unwrap();
+        *guard = ContextSnapshot { data, version: 1 };
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl AgentContext for KnowledgeContext {
-    /// Inject a **local view of the root node** at startup. This gives
-    /// the agent a global overview (top-level children + subtree
-    /// statistics + a 30-title preview) in a single round-trip, with no
-    /// state mutation and no chance of conflicting with mutating
-    /// agents that share the same `KmsService`.
-    async fn on_startup_location(&self) -> Result<Option<String>, String> {
-        let view = self.kms.get_local_view_by_path("/").await?;
-        Ok(Some(render_local_view(&view)))
+    fn read(&self) -> ContextSnapshot {
+        self.state.read().unwrap().clone()
     }
 
-    async fn on_startup_diagnostics(&self) -> Result<Vec<ContextDiagnostic>, String> {
-        Ok(vec![])
-    }
-
-    /// **Stateless snapshot.** The retrieval agent is read-only and
-    /// never wants pointer changes to be re-injected as fresh context.
-    /// Returning a constant `nil`-UUID snapshot makes
-    /// [`on_snapshot_change`](Self::on_snapshot_change) a permanent
-    /// no-op.
-    async fn take_snapshot(&self) -> Result<ContextSnapshot, String> {
-        Ok(ContextSnapshot::new(Uuid::nil()))
-    }
-
-    fn is_mutation_tool(&self, _tool_name: &str) -> bool {
-        false
-    }
-
-    async fn on_mutation_diagnostics(&self) -> Result<Vec<ContextDiagnostic>, String> {
-        Ok(vec![])
-    }
-
-    /// No-op: snapshots are always equal (see [`take_snapshot`]).
-    async fn on_snapshot_change(
-        &self,
-        _before: &ContextSnapshot,
-        _after: &ContextSnapshot,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
-    fn system_prompt_section(&self) -> String {
-        KNOWLEDGE_RETRIEVAL_PROMPT.to_string()
-    }
-
-    fn tool_registrations(&self) -> Vec<ToolRegistration> {
-        dendrite_tools::kms_tools::readonly_registrations(self.kms.clone())
+    /// No-op: the knowledge agent is read-only and its context never
+    /// changes. The version stays at whatever `initialize()` set (1).
+    async fn write(&self, _changes: ContextChanges) -> Result<(), String> {
+        Ok(())
     }
 }
 

@@ -34,7 +34,7 @@ pub fn registration(
     svc: Arc<kms::KmsService>,
     pool: Arc<ModelPool>,
     sub_context_factory: Arc<
-        dyn Fn(Arc<kms::KmsService>) -> Arc<dyn agentik_core::context::AgentContext> + Send + Sync,
+        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> crate::SubAgentConfig + Send + Sync,
     >,
     process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
@@ -92,7 +92,7 @@ async fn dispatch_parallel(
     svc: &Arc<kms::KmsService>,
     pool: &Arc<ModelPool>,
     sub_context_factory: &Arc<
-        dyn Fn(Arc<kms::KmsService>) -> Arc<dyn agentik_core::context::AgentContext> + Send + Sync,
+        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> crate::SubAgentConfig + Send + Sync,
     >,
     process_manager: &Arc<agentik_core::process::ProcessManager>,
     agent_titles: &Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
@@ -140,15 +140,22 @@ async fn dispatch_parallel(
     let mut spawned: Vec<Spawned> = Vec::with_capacity(plan.len());
     for p in plan {
         let sub_svc = Arc::new(svc.with_pointer(p.staging_id));
-        let ctx = sub_context_factory(sub_svc);
+        let config = sub_context_factory(sub_svc.clone(), pool.clone());
+
+        // Trigger initial context population (location + diagnostics).
+        let _ = config.context.write(agentik_core::context::ContextChanges::default()).await;
+
         let content = p.sub_task.content.clone();
         let staging_title = p.sub_task.staging_title.clone();
 
+        let tools = crate::registrations(sub_svc.clone(), config.context.clone());
         let agent_id = process_manager
             .spawn(
                 Agent::builder()
                     .with_model_pool(pool.clone())
-                    .with_context(ctx),
+                    .with_context(config.context)
+                    .with_system_prompt_section(config.system_prompt)
+                    .with_tools(tools),
             )
             .await
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {

@@ -309,25 +309,25 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             code: KeyCode::Char('d'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } if app.focused == Panel::Tree => tree_move(app, HALF_PAGE as isize),
+        } => handle_half_page_down(app),
         // Ctrl+u — half-page up.
         KeyEvent {
             code: KeyCode::Char('u'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } if app.focused == Panel::Tree => tree_move(app, -(HALF_PAGE as isize)),
+        } => handle_half_page_up(app),
         // Ctrl+f — full page down.
         KeyEvent {
             code: KeyCode::Char('f'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } if app.focused == Panel::Tree => tree_move(app, FULL_PAGE as isize),
+        } => handle_page_down(app),
         // Ctrl+b — full page up.
         KeyEvent {
             code: KeyCode::Char('b'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } if app.focused == Panel::Tree => tree_move(app, -(FULL_PAGE as isize)),
+        } => handle_page_up(app),
         // --- Generic scroll bindings (for panels that aren't handled above) ---
         KeyEvent {
             code: KeyCode::Char('j') | KeyCode::Down,
@@ -423,6 +423,52 @@ fn handle_page_up(app: &mut App) -> Action {
         }
         Panel::Diagnostics => {
             app.scroll_diag = app.scroll_diag.saturating_sub(FULL_PAGE as u16);
+            Action::None
+        }
+        Panel::Agents => Action::None,
+    }
+}
+
+fn handle_half_page_down(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Tree => tree_move(app, HALF_PAGE as isize),
+        Panel::Agent => {
+            app.agent_auto_scroll = false;
+            app.agent_scroll = app.agent_scroll.saturating_add(HALF_PAGE as u16);
+            Action::None
+        }
+        Panel::KnowledgeEntity => {
+            let lines = match app.ke_tab {
+                crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                crate::state::KeTab::Entity => &app.entity_lines,
+            };
+            app.ke_scroll = (app.ke_scroll as usize + HALF_PAGE)
+                .min(lines.len().saturating_sub(1)) as u16;
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = (app.scroll_diag as usize + HALF_PAGE)
+                .min(app.diagnostic_lines.len().saturating_sub(1)) as u16;
+            Action::None
+        }
+        Panel::Agents => Action::None,
+    }
+}
+
+fn handle_half_page_up(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Tree => tree_move(app, -(HALF_PAGE as isize)),
+        Panel::Agent => {
+            app.agent_auto_scroll = false;
+            app.agent_scroll = app.agent_scroll.saturating_sub(HALF_PAGE as u16);
+            Action::None
+        }
+        Panel::KnowledgeEntity => {
+            app.ke_scroll = app.ke_scroll.saturating_sub(HALF_PAGE as u16);
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = app.scroll_diag.saturating_sub(HALF_PAGE as u16);
             Action::None
         }
         Panel::Agents => Action::None,

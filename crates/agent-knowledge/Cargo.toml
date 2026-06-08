@@ -11,6 +11,8 @@ dendrite-tools = { path = "../dendrite-tools" }
 kms = { path = "../kms" }
 
 async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
 uuid = { version = "1.12", features = ["v4"] }
 
 [dev-dependencies]

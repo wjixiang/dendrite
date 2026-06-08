@@ -1,73 +1,60 @@
 //! [`AgentContext`] implementation backed by a [`kms::KmsService`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentik_core::context::{AgentContext, ContextDiagnostic, ContextSnapshot};
+use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
-use dendrite_tools::ToolRegistration;
+use serde_json::json;
 
-use crate::diagnostics::convert_diagnostics;
-use crate::prompt::KMS_SYSTEM_PROMPT;
-use crate::tools::is_mutation_tool;
+use crate::diagnostics::convert_diagnostics_to_json;
 
 pub struct KmsContext {
     kms: Arc<kms::KmsService>,
+    state: std::sync::RwLock<ContextSnapshot>,
 }
 
 impl KmsContext {
     pub fn new(kms: Arc<kms::KmsService>) -> Self {
-        Self { kms }
+        Self {
+            kms,
+            state: std::sync::RwLock::new(ContextSnapshot::default()),
+        }
     }
 
     pub async fn from_path(db_path: &str) -> Result<Self, String> {
         let svc = kms::KmsService::new(db_path).await?;
         Ok(Self::new(Arc::new(svc)))
     }
+
+    /// Initialize context with current KMS state (location + diagnostics).
+    /// Must be called before the agent starts so that the agent loop's
+    /// `inject_context_if_changed` fires once at startup (version 0 → 1).
+    pub async fn initialize(&self) -> Result<(), String> {
+        let location = self.kms.render_location().await?;
+        let diagnostics = self.kms.diagnose().await?;
+        let mut data = HashMap::new();
+        data.insert("location".into(), json!(location));
+        data.insert("diagnostics".into(), convert_diagnostics_to_json(diagnostics));
+        let mut guard = self.state.write().unwrap();
+        *guard = ContextSnapshot { data, version: 1 };
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl AgentContext for KmsContext {
-    async fn on_startup_location(&self) -> Result<Option<String>, String> {
+    fn read(&self) -> ContextSnapshot {
+        self.state.read().unwrap().clone()
+    }
+
+    async fn write(&self, _changes: ContextChanges) -> Result<(), String> {
         let location = self.kms.render_location().await?;
-        Ok(Some(location))
-    }
-
-    async fn on_startup_diagnostics(&self) -> Result<Vec<ContextDiagnostic>, String> {
-        let issues = self.kms.diagnose().await?;
-        Ok(convert_diagnostics(issues))
-    }
-
-    async fn take_snapshot(&self) -> Result<ContextSnapshot, String> {
-        Ok(ContextSnapshot::new(self.kms.get_pointer().await))
-    }
-
-    fn is_mutation_tool(&self, tool_name: &str) -> bool {
-        is_mutation_tool(tool_name)
-    }
-
-    async fn on_mutation_diagnostics(&self) -> Result<Vec<ContextDiagnostic>, String> {
-        let issues = self.kms.diagnose().await?;
-        Ok(convert_diagnostics(issues))
-    }
-
-    async fn on_snapshot_change(
-        &self,
-        before: &ContextSnapshot,
-        after: &ContextSnapshot,
-    ) -> Result<Option<String>, String> {
-        if before != after {
-            let location = self.kms.render_location().await?;
-            Ok(Some(location))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn system_prompt_section(&self) -> String {
-        KMS_SYSTEM_PROMPT.to_string()
-    }
-
-    fn tool_registrations(&self) -> Vec<ToolRegistration> {
-        dendrite_tools::kms_tools::registrations(self.kms.clone())
+        let diagnostics = self.kms.diagnose().await?;
+        let mut guard = self.state.write().unwrap();
+        guard.data.insert("location".into(), json!(location));
+        guard.data.insert("diagnostics".into(), convert_diagnostics_to_json(diagnostics));
+        guard.version += 1;
+        Ok(())
     }
 }

@@ -7,7 +7,8 @@
 
 pub mod kms_tools;
 
-pub use kms_tools::registrations;
-pub use kms_tools::readonly_registrations;
-pub use kms_tools::parallel_registrations;
 pub use agentik_core::tools::ToolRegistration;
+pub use kms_tools::parallel_registrations;
+pub use kms_tools::readonly_registrations;
+pub use kms_tools::registrations;
+pub use kms_tools::SubAgentConfig;

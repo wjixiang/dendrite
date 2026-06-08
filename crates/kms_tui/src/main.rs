@@ -21,6 +21,7 @@ use crossterm::{
 use agent_compose::KmsContext;
 use agent_compose::ParallelComposeContext;
 use agent_knowledge::KnowledgeContext;
+use agentik_sdk::model::model_pool::ModelPool;
 use kms::KmsService;
 use ratatui::Terminal;
 
@@ -125,28 +126,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let pool_arc = Arc::new(pool);
 
+        // Compose agent
+        let compose_ctx = Arc::new(KmsContext::new(Arc::new(svc.clone())));
+        compose_ctx.initialize().await.map_err(|e| e.to_string())?;
+
         let compose_agent = agentik_core::Agent::builder()
             .with_model_pool(pool_arc.clone())
-            .with_context(Arc::new(KmsContext::new(Arc::new(svc.clone()))))
+            .with_context(compose_ctx.clone())
+            .with_system_prompt_section(agent_compose::KMS_SYSTEM_PROMPT)
+            .with_tools(dendrite_tools::registrations(
+                Arc::new(svc.clone()),
+                compose_ctx,
+            ))
             .build()
             .await
             .map_err(|e| e.to_string())?;
+
+        // Knowledge agent
+        let knowledge_ctx = Arc::new(KnowledgeContext::new(Arc::new(svc.clone())));
+        knowledge_ctx.initialize().await.map_err(|e| e.to_string())?;
 
         let knowledge_agent = agentik_core::Agent::builder()
             .with_model_pool(pool_arc.clone())
-            .with_context(Arc::new(KnowledgeContext::new(Arc::new(svc.clone()))))
+            .with_context(knowledge_ctx)
+            .with_system_prompt_section(agent_knowledge::KNOWLEDGE_RETRIEVAL_PROMPT)
+            .with_tools(dendrite_tools::readonly_registrations(Arc::new(svc.clone())))
             .build()
             .await
             .map_err(|e| e.to_string())?;
 
+        // Parallel agent
+        let parallel_ctx = Arc::new(ParallelComposeContext::new(Arc::new(svc.clone())));
+        parallel_ctx.initialize().await.map_err(|e| e.to_string())?;
+
+        let sub_factory: Arc<
+            dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> dendrite_tools::SubAgentConfig
+                + Send
+                + Sync,
+        > = Arc::new(|sub_svc, _pool| {
+            let ctx = Arc::new(agent_compose::SubTreeComposeContext::new(sub_svc.clone()));
+            dendrite_tools::SubAgentConfig {
+                context: ctx,
+                system_prompt: agent_compose::SUBTREE_COMPOSE_PROMPT,
+            }
+        });
+
         let parallel_agent = agentik_core::Agent::builder()
             .with_model_pool(pool_arc.clone())
-            .with_context(Arc::new(ParallelComposeContext::new(
+            .with_context(parallel_ctx.clone())
+            .with_system_prompt_section(agent_compose::PARALLEL_COMPOSE_PROMPT)
+            .with_tools(dendrite_tools::parallel_registrations(
                 Arc::new(svc.clone()),
+                parallel_ctx,
                 pool_arc.clone(),
+                sub_factory,
                 process_manager.clone(),
                 agent_titles.clone(),
-            )))
+            ))
             .build()
             .await
             .map_err(|e| e.to_string())?;
