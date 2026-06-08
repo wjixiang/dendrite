@@ -7,6 +7,17 @@ use crate::theme::Theme;
 const MAX_THINKING_LINES: usize = 10;
 const MAX_TOOL_RESULT_LINES: usize = 6;
 const MAX_ARRAY_ITEMS: usize = 8;
+/// Maximum number of keys from a tool call/result JSON object that
+/// the chat panel will render before folding the rest into a single
+/// "… and N more keys" line. Tools that return very wide objects
+/// (e.g. a knowledge record with many entities) no longer blow up
+/// the chat history.
+const MAX_OBJECT_KEYS: usize = 10;
+/// Per-line character cap for any single field value rendered in a
+/// tool call/result. Long strings (minified JSON, file dumps) are
+/// truncated to this many characters with a trailing `…` so a wide
+/// viewport doesn't get one tool result spanning the whole screen.
+const MAX_TOOL_FIELD_CHARS: usize = 200;
 /// Maximum number of *logical* lines from a user message that the
 /// chat panel will display verbatim. Anything beyond is collapsed
 /// into a single "… N more lines (truncated)" indicator. The full
@@ -201,17 +212,27 @@ fn render_tool_call(name: &str, input: &Value, theme: &Theme) -> Vec<Line<'stati
         Span::styled(name.to_string(), theme.tool_call_bold_style()),
     ])];
     if let Some(obj) = input.as_object() {
-        for (key, val) in obj {
+        let total = obj.len();
+        for (key, val) in obj.iter().take(MAX_OBJECT_KEYS) {
             lines.push(Line::from(vec![
                 Span::styled("    ".to_string(), Style::default()),
                 Span::styled(format!("{}: ", key), Style::default().fg(theme.text_secondary)),
                 Span::styled(format_value(val), Style::default().fg(theme.text_primary)),
             ]));
         }
+        if total > MAX_OBJECT_KEYS {
+            lines.push(Line::from(Span::styled(
+                format!("    … and {} more keys", total - MAX_OBJECT_KEYS),
+                Style::default().fg(theme.text_muted),
+            )));
+        }
     } else if !input.is_null() {
         lines.push(Line::from(vec![
             Span::styled("    ".to_string(), Style::default()),
-            Span::styled(truncate_str(&input.to_string(), usize::MAX), Style::default().fg(theme.text_primary)),
+            Span::styled(
+                truncate_str(&input.to_string(), MAX_TOOL_FIELD_CHARS),
+                Style::default().fg(theme.text_primary),
+            ),
         ]));
     }
     lines
@@ -228,17 +249,28 @@ fn render_tool_result(ok: bool, content: &str, parsed: Option<&Value>, theme: &T
 
     match parsed {
         Some(Value::Object(map)) => {
-            for (k, v) in map {
+            let total = map.len();
+            for (k, v) in map.iter().take(MAX_OBJECT_KEYS) {
                 lines.push(Line::from(vec![
                     Span::styled("    ".to_string(), Style::default()),
                     Span::styled(format!("{}: ", k), Style::default().fg(theme.text_muted)),
                     Span::styled(format_value(v), style),
                 ]));
             }
+            if total > MAX_OBJECT_KEYS {
+                lines.push(Line::from(Span::styled(
+                    format!("    … and {} more keys", total - MAX_OBJECT_KEYS),
+                    Style::default().fg(theme.text_muted),
+                )));
+            }
         }
         Some(Value::Array(arr)) => {
             for item in arr.iter().take(MAX_ARRAY_ITEMS) {
-                let label = if let Some(s) = item.as_str() { truncate_str(s, usize::MAX) } else { format_value(item) };
+                let label = if let Some(s) = item.as_str() {
+                    truncate_str(s, MAX_TOOL_FIELD_CHARS)
+                } else {
+                    format_value(item)
+                };
                 lines.push(Line::from(vec![
                     Span::styled("    ".to_string(), Style::default()),
                     Span::styled(format!("  • {}", label), style),
@@ -255,23 +287,40 @@ fn render_tool_result(ok: bool, content: &str, parsed: Option<&Value>, theme: &T
             for l in s.lines().take(MAX_TOOL_RESULT_LINES) {
                 lines.push(Line::from(vec![
                     Span::styled("    ".to_string(), Style::default()),
-                    Span::styled(truncate_str(l, usize::MAX), style),
+                    Span::styled(truncate_str(l, MAX_TOOL_FIELD_CHARS), style),
                 ]));
+            }
+            let total_lines = s.lines().count();
+            if total_lines > MAX_TOOL_RESULT_LINES {
+                lines.push(Line::from(Span::styled(
+                    format!("    … {} more lines (truncated)", total_lines - MAX_TOOL_RESULT_LINES),
+                    Style::default().fg(theme.text_muted),
+                )));
             }
         }
         Some(other) => {
             lines.push(Line::from(vec![
                 Span::styled("    ".to_string(), Style::default()),
-                Span::styled(truncate_str(&other.to_string(), usize::MAX), style),
+                Span::styled(
+                    truncate_str(&other.to_string(), MAX_TOOL_FIELD_CHARS),
+                    style,
+                ),
             ]));
         }
         None => {
             // Fallback: couldn't parse JSON, show raw text lines.
+            let total_lines = content.lines().count();
             for l in content.lines().take(MAX_TOOL_RESULT_LINES) {
                 lines.push(Line::from(vec![
                     Span::styled("    ".to_string(), Style::default()),
-                    Span::styled(truncate_str(l, usize::MAX), style),
+                    Span::styled(truncate_str(l, MAX_TOOL_FIELD_CHARS), style),
                 ]));
+            }
+            if total_lines > MAX_TOOL_RESULT_LINES {
+                lines.push(Line::from(Span::styled(
+                    format!("    … {} more lines (truncated)", total_lines - MAX_TOOL_RESULT_LINES),
+                    Style::default().fg(theme.text_muted),
+                )));
             }
         }
     }
@@ -289,7 +338,7 @@ pub fn format_value(v: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
-        Value::String(s) => truncate_str(s, usize::MAX),
+        Value::String(s) => truncate_str(s, MAX_TOOL_FIELD_CHARS),
         Value::Array(arr) => {
             if arr.is_empty() { "[]".to_string() } else if arr.len() == 1 { format!("[{}]", format_value(&arr[0])) } else { format!("[{} items]", arr.len()) }
         }
@@ -353,6 +402,75 @@ mod render_tests {
     fn empty_user_message_still_renders_nothing() {
         let lines = render_user_message("", &theme());
         assert_eq!(lines.len(), 0);
+    }
+
+    // ---- tool result / tool call field folding ----
+
+    /// A tool call with more than MAX_OBJECT_KEYS keys must show
+    /// only the first N keys and a "… and K more keys" footer.
+    /// Without the cap, a 50-key payload would dump 50 lines into
+    /// the chat history.
+    #[test]
+    fn tool_call_folds_wide_object() {
+        let mut obj = serde_json::Map::new();
+        for i in 0..50 {
+            obj.insert(format!("key_{i}"), Value::String(format!("v{i}")));
+        }
+        let input = Value::Object(obj);
+        let lines = render_tool_call("kms_dummy", &input, &theme());
+        // 1 header + MAX_OBJECT_KEYS keys + 1 fold footer.
+        assert_eq!(lines.len(), 1 + MAX_OBJECT_KEYS + 1);
+        let joined: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("… and 40 more keys"));
+    }
+
+    /// A long string field value must be truncated to
+    /// MAX_TOOL_FIELD_CHARS so a single wide field can't span the
+    /// whole viewport. The truncation must also be UTF-8 safe.
+    #[test]
+    fn tool_result_folds_long_string_field() {
+        let long = "中".repeat(MAX_TOOL_FIELD_CHARS * 3);
+        let parsed = serde_json::json!({ "content": long.clone() });
+        let lines = render_tool_result(true, "", Some(&parsed), &theme());
+        // 1 prefix + 1 field line. No fold footer because we only
+        // showed the first key (object fits).
+        assert_eq!(lines.len(), 2);
+        let rendered = lines[1].to_string();
+        assert!(rendered.ends_with('…'), "expected truncated value, got {rendered:?}");
+        // First MAX_TOOL_FIELD_CHARS chars present, no overflow.
+        let tail = rendered.split("content: ").nth(1).unwrap();
+        // "…" is appended after the cap; we want <= cap + 1.
+        assert!(tail.chars().count() <= MAX_TOOL_FIELD_CHARS + 1);
+    }
+
+    /// A `Value::String` tool result with many lines must be capped
+    /// at MAX_TOOL_RESULT_LINES + 1 (the fold footer), matching the
+    /// existing "more lines (truncated)" pattern used for user
+    /// messages.
+    #[test]
+    fn tool_result_string_folds_by_line_count() {
+        let content: String = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let parsed = Value::String(content);
+        let lines = render_tool_result(true, "", Some(&parsed), &theme());
+        // 1 prefix + MAX_TOOL_RESULT_LINES data lines + 1 footer.
+        assert_eq!(lines.len(), 1 + MAX_TOOL_RESULT_LINES + 1);
+        let joined = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("14 more lines (truncated)"));
+    }
+
+    /// A tool result object with more than MAX_OBJECT_KEYS keys
+    /// must be folded; an `ok=true` prefix and 10 keys + 1 footer.
+    #[test]
+    fn tool_result_object_folds_wide() {
+        let mut obj = serde_json::Map::new();
+        for i in 0..25 {
+            obj.insert(format!("k{i}"), Value::Number(i.into()));
+        }
+        let parsed = Value::Object(obj);
+        let lines = render_tool_result(true, "", Some(&parsed), &theme());
+        assert_eq!(lines.len(), 1 + MAX_OBJECT_KEYS + 1);
+        let joined = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("… and 15 more keys"));
     }
 }
 

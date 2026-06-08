@@ -263,6 +263,11 @@ pub struct App {
     pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_types::AgentEvent>>,
     pub agent_running: bool,
     pub agent_requesting: bool,
+    /// True while the model is actively streaming token deltas
+    /// (TextDelta / ThinkingDelta events). Drives the status-bar
+    /// label so the user can tell at a glance whether the spinner
+    /// is "thinking" (requesting) or "talking back" (streaming).
+    pub agent_streaming: bool,
     pub spinner_tick: usize,
     /// Latest output-token count reported by `UsageUpdate` during
     /// streaming. Displayed in the status bar so the user sees how
@@ -428,6 +433,7 @@ impl App {
             agent_event_rx: None,
             agent_running: false,
             agent_requesting: false,
+            agent_streaming: false,
             spinner_tick: 0,
             agent_usage_tokens: None,
             agent_scroll: 0,

@@ -9,7 +9,7 @@ use ratatui::{
 use crate::state::{App, Panel};
 use crate::theme::Theme;
 
-const SPINNER_FRAMES: &[&str] = &[
+pub(crate) const SPINNER_FRAMES: &[&str] = &[
     "\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
 ];
 
@@ -202,11 +202,21 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
             Some(tokens) => format!(" ({} tokens)", tokens),
             None => String::new(),
         };
+        // Phase label: the spinner keeps rotating across all three
+        // (driven by `agent_running` in input.rs), but the suffix
+        // tells the user *which* phase is active right now.
+        let phase = if app.agent_streaming {
+            "streaming"
+        } else if app.agent_requesting {
+            "requesting"
+        } else {
+            "running"
+        };
         Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(spinner_char.to_string(), Style::default().fg(theme.spinner)),
             Span::styled(
-                format!(" Agent [{}] running{} ", kind_label, usage_suffix),
+                format!(" Agent [{}] {}{} ", kind_label, phase, usage_suffix),
                 Style::default().fg(theme.spinner),
             ),
         ])

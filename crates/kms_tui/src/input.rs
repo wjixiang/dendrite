@@ -53,20 +53,24 @@ pub async fn run_app(
                     history.push(crate::chat::ChatMessage::Done);
                     app.agent_running = false;
                     app.agent_requesting = false;
+                    app.agent_streaming = false;
                     app.agent_usage_tokens = None;
                     app.bump_message_version();
                     pending_refresh = true;
                 }
                 AgentEvent::Requesting => {
                     app.agent_requesting = true;
+                    app.agent_streaming = false;
                 }
                 AgentEvent::TextDelta(token) => {
                     app.agent_requesting = false;
+                    app.agent_streaming = true;
                     events::append_to_streaming_assistant(app, &token);
                     app.bump_message_version();
                 }
                 AgentEvent::ThinkingDelta(token) => {
                     app.agent_requesting = false;
+                    app.agent_streaming = true;
                     events::append_to_streaming_thinking(app, &token);
                     app.bump_message_version();
                 }
@@ -76,9 +80,15 @@ pub async fn run_app(
                 AgentEvent::StreamStart { .. }
                 | AgentEvent::ContentBlockStart { .. }
                 | AgentEvent::ContentBlockStop { .. }
-                | AgentEvent::StreamDelta { .. } => {}
+                | AgentEvent::StreamDelta { .. } => {
+                    // Stream has started — flip the status label to
+                    // "streaming" even before the first token delta
+                    // arrives so the UI feels responsive.
+                    app.agent_streaming = true;
+                }
                 event @ AgentEvent::ToolResult { .. } => {
                     app.agent_requesting = false;
+                    app.agent_streaming = false;
                     events::handle_final_event(app, event);
                     app.bump_message_version();
                     pending_refresh = true;
@@ -87,11 +97,13 @@ pub async fn run_app(
                     // Tool is about to execute — keep the spinner spinning
                     // so the user knows the agent is still working.
                     app.agent_requesting = true;
+                    app.agent_streaming = false;
                     events::handle_final_event(app, event);
                     app.bump_message_version();
                 }
                 event => {
                     app.agent_requesting = false;
+                    app.agent_streaming = false;
                     events::handle_final_event(app, event);
                     app.bump_message_version();
                 }
@@ -128,8 +140,20 @@ pub async fn run_app(
             }
         }
 
-        // Advance the spinner before rendering.
-        if app.agent_requesting {
+        // Advance the spinner before rendering. The tick drives
+        // both the main Agent panel's status bar AND the per-row
+        // indicator on running sub-agents in the Agent status panel.
+        //
+        // We use `agent_running` (the task's lifetime) rather than
+        // `agent_requesting` (the brief "waiting for response" pulse)
+        // so the spinner keeps rotating during streaming deltas —
+        // otherwise the frame freezes on whichever character was
+        // current when the first TextDelta landed. Trade-off: the
+        // spinner also ticks while the agent is alive but idle
+        // between turns; the status bar already shows the spinner
+        // in that state, so keeping it animated is the consistent
+        // choice.
+        if app.agent_running || app.agent_panel.running_count() > 0 {
             app.spinner_tick = (app.spinner_tick + 1) % 8;
             app.needs_render = true;
         }

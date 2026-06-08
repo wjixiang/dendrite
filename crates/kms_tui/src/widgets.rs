@@ -27,7 +27,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // Render the Agents panel when it's focused, using the diag area.
     if app.focused == Panel::Agents {
-        agent_panel::render_agent_panel(f, &app.agent_panel, &theme, app_layout.diag_area);
+        agent_panel::render_agent_panel(
+            f,
+            &app.agent_panel,
+            &theme,
+            app_layout.diag_area,
+            app.spinner_tick,
+        );
     }
 
     if app.settings_modal_open {

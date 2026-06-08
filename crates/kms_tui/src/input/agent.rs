@@ -125,6 +125,8 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
     });
     app.agent_messages_mut().push(ChatMessage::Divider);
     app.agent_running = true;
+    app.agent_requesting = false;
+    app.agent_streaming = false;
     app.agent_auto_scroll = true;
     app.agent_scroll = 0;
 
@@ -139,6 +141,8 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
                 history.pop(); // User
             }
             app.agent_running = false;
+            app.agent_requesting = false;
+            app.agent_streaming = false;
             app.agent_event_rx = None;
             app.toast.error(format!(
                 "{} agent is not available — check the model pool in Settings",

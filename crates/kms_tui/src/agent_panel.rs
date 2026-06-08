@@ -18,6 +18,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use serde_json::Value;
 
+use crate::components::SPINNER_FRAMES;
 use crate::theme::Theme;
 
 // ---- State types -----------------------------------------------------------
@@ -482,6 +483,7 @@ pub fn render_agent_panel(
     state: &crate::agent_panel::AgentPanelState,
     theme: &Theme,
     area: ratatui::layout::Rect,
+    spinner_tick: usize,
 ) {
     let block = Block::default()
         .title(" Agents ")
@@ -489,7 +491,7 @@ pub fn render_agent_panel(
         .border_style(theme.focused_border_style(true));
     let inner = block.inner(area);
 
-    let lines = render_panel_lines(state, theme, area.width as usize);
+    let lines = render_panel_lines(state, theme, area.width as usize, spinner_tick);
     let paragraph = ratatui::widgets::Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
 
@@ -497,7 +499,12 @@ pub fn render_agent_panel(
     let _ = inner; // suppress unused warning
 }
 
-fn render_panel_lines(state: &AgentPanelState, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn render_panel_lines(
+    state: &AgentPanelState,
+    theme: &Theme,
+    width: usize,
+    spinner_tick: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     let running = state.running_count();
@@ -560,7 +567,7 @@ fn render_panel_lines(state: &AgentPanelState, theme: &Theme, width: usize) -> V
             is_selected,
             now,
         };
-        lines.push(render_agent_row(entry, &layout, theme, width));
+        lines.push(render_agent_row(entry, &layout, theme, width, spinner_tick));
 
         if entry.expanded {
             for ev in &entry.events {
@@ -599,9 +606,13 @@ fn render_agent_row(
     layout: &AgentEntryLayout,
     theme: &Theme,
     width: usize,
+    spinner_tick: usize,
 ) -> Line<'static> {
     let (icon, icon_style) = match &entry.status {
-        AgentEntryStatus::Running => ("⠋", ratatui::style::Style::default().fg(theme.spinner)),
+        AgentEntryStatus::Running => (
+            SPINNER_FRAMES[spinner_tick % SPINNER_FRAMES.len()],
+            ratatui::style::Style::default().fg(theme.spinner),
+        ),
         AgentEntryStatus::Completed { .. } => ("✓", theme.success_style()),
         AgentEntryStatus::Failed { .. } => ("✗", theme.error_style()),
     };
