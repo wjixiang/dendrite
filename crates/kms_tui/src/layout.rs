@@ -29,21 +29,18 @@ impl LayoutMode {
                 Panel::Tree,
                 Panel::KnowledgeEntity,
                 Panel::Agent,
-                Panel::Agents,
                 Panel::Diagnostics,
             ],
             LayoutMode::Two => &[
                 Panel::Tree,
                 Panel::Agent,
                 Panel::KnowledgeEntity,
-                Panel::Agents,
                 Panel::Diagnostics,
             ],
             LayoutMode::Single => &[
                 Panel::Agent,
                 Panel::Tree,
                 Panel::KnowledgeEntity,
-                Panel::Agents,
                 Panel::Diagnostics,
             ],
         }

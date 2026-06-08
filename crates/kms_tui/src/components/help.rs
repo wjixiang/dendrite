@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::state::{App, Panel};
+use crate::state::{App, ChatFocus, Panel};
 use crate::theme::Theme;
 
 pub fn render_help_bar(theme: &Theme, app: &App) -> Paragraph<'static> {
@@ -18,6 +18,9 @@ pub fn render_help_bar(theme: &Theme, app: &App) -> Paragraph<'static> {
             Span::styled(" [t] Tab ", Style::default().fg(theme.help_key)),
         ],
         Panel::Agent => {
+            // The Agent panel has two sub-sections. The hints differ
+            // based on `chat_focus` so the user knows which set of
+            // keys is live.
             if app.agent_running {
                 vec![
                     Span::styled(" ...running... ", Style::default().fg(theme.spinner)),
@@ -27,20 +30,33 @@ pub fn render_help_bar(theme: &Theme, app: &App) -> Paragraph<'static> {
                     Span::styled(" [Enter] Send ", Style::default().fg(theme.help_key)),
                     Span::styled(" [Esc] Cancel ", Style::default().fg(theme.help_key)),
                 ]
-            } else {
+            } else if app.chat_focus == ChatFocus::AgentsPanel
+                && !app.agent_panel.agents.is_empty()
+            {
+                // Sub-agent list is the active sub-focus.
                 vec![
+                    Span::styled(" [j/k] Select ", Style::default().fg(theme.help_key)),
+                    Span::styled(" [Enter] Expand ", Style::default().fg(theme.help_key)),
+                    Span::styled(" [e/c] All ", Style::default().fg(theme.help_key)),
+                    Span::styled(" [S-Tab] Back ", Style::default().fg(theme.help_key)),
+                ]
+            } else {
+                // Chat history is the active sub-focus (default).
+                let mut hints = vec![
                     Span::styled(" [Enter] Type ", Style::default().fg(theme.help_key)),
                     Span::styled(" [j/k] Scroll ", Style::default().fg(theme.help_key)),
                     Span::styled(" [End] Follow ", Style::default().fg(theme.help_key)),
                     Span::styled(" [a] Agent ", Style::default().fg(theme.help_key)),
-                ]
+                ];
+                if !app.agent_panel.agents.is_empty() {
+                    hints.push(Span::styled(
+                        " [Tab] Agents ",
+                        Style::default().fg(theme.help_key),
+                    ));
+                }
+                hints
             }
         }
-        Panel::Agents => vec![
-            Span::styled(" [j/k] Select ", Style::default().fg(theme.help_key)),
-            Span::styled(" [Enter] Expand ", Style::default().fg(theme.help_key)),
-            Span::styled(" [e/c] All ", Style::default().fg(theme.help_key)),
-        ],
         Panel::Diagnostics => vec![
             Span::styled(" [j/k] Scroll ", Style::default().fg(theme.help_key)),
         ],

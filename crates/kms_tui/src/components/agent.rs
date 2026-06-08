@@ -6,12 +6,52 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::state::{App, Panel};
+use crate::agent_panel;
+use crate::state::{App, ChatFocus, Panel};
 use crate::theme::Theme;
 
 pub(crate) const SPINNER_FRAMES: &[&str] = &[
     "\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
 ];
+
+/// Maximum height (in visual rows) the embedded sub-agent list can
+/// grow to. The list auto-shrinks to fit, but this caps it so a
+/// chat panel that's the only thing on screen still leaves a
+/// reasonable amount of room for the conversation. The minimum is
+/// 3 rows (header + one agent row + hint) so even one running
+/// sub-agent doesn't look squashed.
+const SUB_AGENT_PANEL_MAX_HEIGHT: u16 = 10;
+const SUB_AGENT_PANEL_MIN_HEIGHT: u16 = 3;
+
+/// How many visual rows the embedded sub-agent list should occupy
+/// given `agent_count` sub-agents and a `panel_height` for the
+/// whole Agent panel. Each visible row uses 1 line, plus an extra
+/// line for the header and a "… +N more" footer when the list is
+/// longer than fits. We also reserve the bottom 1-row status bar
+/// and (when shown) the 1-row divider above the list.
+fn sub_agent_height_for(agent_count: usize, panel_height: u16) -> u16 {
+    // Account for the fixed siblings: 1 status bar + 1 divider
+    // (when the sub-list is shown). Add 1 for the list header
+    // (the "Agents · N total …" line) and 1 for the "… +N more"
+    // footer when the list is long enough to need one.
+    let status_bar = 1u16;
+    let divider = 1u16;
+    let header = 1u16;
+    let footer = if agent_count > 3 { 1u16 } else { 0u16 };
+
+    // 1 row per agent (the row itself; running agents also get a
+    // peek-line below, but we don't try to budget for that — the
+    // Paragraph inside the sub-list handles overflow by clipping
+    // at the bottom, which is the same behavior as before).
+    let want = header + agent_count as u16 + footer + divider + status_bar;
+
+    // Respect both the global min/max for the sub-section and the
+    // hard cap of leaving at least 3 rows for the chat above.
+    let max_for_sub = SUB_AGENT_PANEL_MAX_HEIGHT.min(panel_height.saturating_sub(3));
+    let bounded_max = max_for_sub.max(SUB_AGENT_PANEL_MIN_HEIGHT);
+
+    want.clamp(SUB_AGENT_PANEL_MIN_HEIGHT, bounded_max.max(SUB_AGENT_PANEL_MIN_HEIGHT))
+}
 
 /// Cap the user-driven `agent_scroll` at the actual history bottom
 /// and return the row that should be displayed this frame.
@@ -34,10 +74,37 @@ fn resolve_global_scroll(agent_scroll: u16, auto_scroll: bool, max_scroll: usize
 
 /// Main function of Agent message rendering
 pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
+    // The Agent panel is now a single bordered group that contains
+    // up to three sub-sections stacked vertically:
+    //   1. Chat messages (the conversation history) — always shown.
+    //   2. Sub-agent status list — embedded inside the same border,
+    //      shown when at least one sub-agent is registered.
+    //   3. Status / input bar (spinner, phase, prompt) — always shown.
+    //
+    // We split the area *before* drawing the border so the inner
+    // sections sit cleanly under one outer frame.
+    let sub_agent_count = app.agent_panel.agents.len();
+    let show_sub_agents = sub_agent_count > 0;
+
+    let chunks = if show_sub_agents {
+        // The sub-agent section is bounded by MIN/MAX so it never
+        // eats the whole chat. The exact split is computed from the
+        // number of agents we want to show (capped by what fits).
+        let target_h = sub_agent_height_for(sub_agent_count, area.height);
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(target_h),
+                Constraint::Length(1),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area)
+    };
 
     let kind_label = app.agent_kind.label();
     let title = if app.providers.is_empty() {
@@ -63,8 +130,15 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         )
     };
 
-    let inner_height = chunks[0].height.saturating_sub(2) as usize;
-    let inner_width = chunks[0].width.saturating_sub(2) as u16;
+    // Section rects: [messages, sub_agents?, status_bar]
+    let (messages_area, sub_area, status_area) = if show_sub_agents {
+        (chunks[0], Some(chunks[1]), chunks[2])
+    } else {
+        (chunks[0], None, chunks[1])
+    };
+
+    let inner_height = messages_area.height.saturating_sub(2) as usize;
+    let inner_width = messages_area.width.saturating_sub(2) as u16;
 
     let (rendered_lines, scroll_y): (Vec<Line<'static>>, u16) = if app.providers.is_empty() {
         // Empty-pool first-run hint instead of the normal chat history.
@@ -188,7 +262,73 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         .block(conv_block)
         .wrap(Wrap { trim: false })
         .scroll((scroll_y, 0));
-    f.render_widget(conv, chunks[0]);
+    f.render_widget(conv, messages_area);
+
+    // --- Embedded sub-agent list ---------------------------------------
+    //
+    // Rendered inside the same outer border as the chat, on its own
+    // dedicated row. A horizontal divider line is drawn at the top
+    // of the sub-area so the user can tell the two sections apart.
+    if let Some(sub_rect) = sub_area {
+        if sub_rect.height >= 1 {
+            // Divider: draw a horizontal rule using a muted line that
+            // spans the panel width. The block that owns the right
+            // border is the chat's, so we just draw an unsized
+            // Paragraph with a single line that visually separates
+            // the regions.
+            if sub_rect.height >= 2 {
+                let divider = Paragraph::new(Line::from(Span::styled(
+                    "\u{2500}".repeat(sub_rect.width as usize),
+                    Style::default().fg(theme.text_muted),
+                )));
+                f.render_widget(divider, Rect {
+                    x: sub_rect.x,
+                    y: sub_rect.y,
+                    width: sub_rect.width,
+                    height: 1,
+                });
+
+                // Inner area for the actual list rows, below the divider.
+                let list_rect = Rect {
+                    x: sub_rect.x,
+                    y: sub_rect.y + 1,
+                    width: sub_rect.width,
+                    height: sub_rect.height.saturating_sub(1),
+                };
+
+                // Subtle highlight border around the sub-agent list
+                // when it's the active sub-focus, so the user can
+                // see where their j/k will land.
+                let sub_focused = app.focused == Panel::Agent
+                    && app.chat_focus == ChatFocus::AgentsPanel;
+                if list_rect.height >= 1 {
+                    let sub_block = Block::default()
+                        .borders(Borders::LEFT | Borders::RIGHT)
+                        .border_style(theme.focused_border_style(sub_focused));
+                    let inner = sub_block.inner(list_rect);
+                    f.render_widget(sub_block, list_rect);
+                    agent_panel::render_agent_panel(
+                        f,
+                        &app.agent_panel,
+                        theme,
+                        inner,
+                        app.spinner_tick,
+                    );
+                }
+            } else {
+                // No divider possible: just use the full 1-row sub-area
+                // for the list (it'll get truncated, but at least the
+                // header is visible).
+                agent_panel::render_agent_panel(
+                    f,
+                    &app.agent_panel,
+                    theme,
+                    sub_rect,
+                    app.spinner_tick,
+                );
+            }
+        }
+    }
 
     let status_line = if app.providers.is_empty() {
         // No providers — no input, just the hint to open settings.
@@ -238,11 +378,11 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         ratatui::style::Color::Black
     };
     let input_line = Paragraph::new(status_line).style(Style::default().bg(input_bg));
-    f.render_widget(input_line, chunks[1]);
+    f.render_widget(input_line, status_area);
 
     if app.agent_input_active && app.focused == Panel::Agent && !app.providers.is_empty() {
-        let cursor_x = chunks[1].x + 2 + app.agent_input.len() as u16;
-        let cursor_y = chunks[1].y;
+        let cursor_x = status_area.x + 2 + app.agent_input.len() as u16;
+        let cursor_y = status_area.y;
         f.set_cursor_position((cursor_x, cursor_y));
     }
 }

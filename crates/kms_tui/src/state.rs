@@ -10,7 +10,24 @@ use crate::agent_panel::AgentPanelState;
 use crate::chat::ChatMessage;
 use crate::components::toast::ToastManager;
 use crate::settings::{PoolEntry, ProviderConfig};
+use uuid::Uuid;
+
 use crate::theme::Theme;
+
+/// A paste entry awaiting submission. Either the full text is still
+/// held in memory (`content = Some`), or it has already been
+/// uploaded as a document (`content = None`, `doc_id = Some`).
+#[derive(Debug, Clone)]
+pub struct PasteEntry {
+    /// Short text shown in the input area and chat history.
+    pub placeholder: String,
+    /// Text shown in chat history (always compact, never full text).
+    pub display: String,
+    /// Full text of the paste, if not yet ingested as a document.
+    pub content: Option<String>,
+    /// Document UUID, if the content has been uploaded.
+    pub doc_id: Option<Uuid>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentKind {
@@ -42,15 +59,24 @@ pub enum Panel {
     Tree,
     KnowledgeEntity,
     Agent,
-    Agents,
     Diagnostics,
 }
 
 /// Sub-focus within the `Agent` panel.
+///
+/// `Panel::Agent` is a single top-level panel, but it has two
+/// internal sub-sections (the chat history at the top and the
+/// sub-agent status list at the bottom). `ChatFocus` selects
+/// which sub-section receives key events when the Agent panel
+/// is focused. The renderer uses it only to pick borders and
+/// help-bar text — the sub-agent list is always visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatFocus {
+    /// Chat history (the upper region). `j`/`k` scroll messages.
     Messages,
-    #[allow(dead_code)]
+    /// Sub-agent status list (the lower region). `j`/`k`/`Enter`/`e`/`c`
+    /// navigate/expand the agent rows. Only reachable when the
+    /// sub-agent list has at least one entry.
     AgentsPanel,
 }
 
@@ -66,7 +92,6 @@ impl std::fmt::Display for Panel {
             Panel::Tree => write!(f, "Tree"),
             Panel::KnowledgeEntity => write!(f, "Knowledge"),
             Panel::Agent => write!(f, "Agent"),
-            Panel::Agents => write!(f, "Agents"),
             Panel::Diagnostics => write!(f, "Diag"),
         }
     }
@@ -292,9 +317,10 @@ pub struct App {
     pub agent_input: String,
     pub agent_input_active: bool,
 
-    /// Side-channel that maps a paste placeholder to the full text the
-    /// user pasted.
-    pub agent_pastes: Vec<(String, String)>,
+    /// Side-channel for paste entries. Each entry either holds the
+    /// full text (to be ingested as a document at submit time) or has
+    /// already been uploaded (content=None, doc_id=Some).
+    pub agent_pastes: Vec<PasteEntry>,
 
     /// Singleton ProcessManager that manages all sub-agents spawned
     /// by parallel dispatch. Owned by the TUI, shared via Arc to the
@@ -311,7 +337,9 @@ pub struct App {
     /// State for the dedicated Agent Status panel.
     pub agent_panel: AgentPanelState,
 
-    /// Sub-focus within the Agent panel.
+    /// Sub-focus within the Agent panel. Drives which sub-section
+    /// (`Messages` vs the embedded `AgentsPanel`) gets key events
+    /// when the Agent panel is the focused top-level panel.
     pub chat_focus: ChatFocus,
 
     /// Wall-clock instant of the last tree refresh. Used to debounce
@@ -442,7 +470,7 @@ impl App {
             agent_auto_scroll: true,
             agent_input: String::new(),
             agent_input_active: false,
-            agent_pastes: Vec::new(),
+            agent_pastes: Vec::new(), // PasteEntry
             process_manager,
             process_event_rx: Some(process_event_rx),
             agent_titles,

@@ -2,8 +2,7 @@ use ratatui::Frame;
 
 use crate::components;
 use crate::layout;
-use crate::state::{App, Panel};
-use crate::agent_panel;
+use crate::state::App;
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let app_layout = layout::compute(f.area());
@@ -15,6 +14,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         &mut app.tree_state,
     );
     components::render_knowledge_entity(f, app, &theme, app_layout.ke_area);
+    // The Agent panel is now a single bordered group containing the
+    // chat messages, an embedded sub-agent list (when any are
+    // registered), and the status bar. No more overlay on the
+    // diagnostic area.
     components::render_agent(f, app, &theme, app_layout.agent_area);
     f.render_widget(
         components::render_diagnostics(app, &theme, app_layout.diag_area),
@@ -24,17 +27,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         components::render_help_bar(&theme, app),
         app_layout.help_area,
     );
-
-    // Render the Agents panel when it's focused, using the diag area.
-    if app.focused == Panel::Agents {
-        agent_panel::render_agent_panel(
-            f,
-            &app.agent_panel,
-            &theme,
-            app_layout.diag_area,
-            app.spinner_tick,
-        );
-    }
 
     if app.settings_modal_open {
         components::render_settings_modal(f, app, &theme);

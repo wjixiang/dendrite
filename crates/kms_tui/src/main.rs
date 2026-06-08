@@ -74,12 +74,78 @@ fn log_path() -> std::path::PathBuf {
     std::path::PathBuf::from("data/tui.log")
 }
 
+/// Parse `--attach <PATH>` arguments from the command line.
+/// Each `--attach` consumes the next argument as a file path.
+/// Returns the list of paths (resolved) in order.
+fn parse_attach_paths(args: &[String]) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    let mut i = 1; // skip program name
+    while i < args.len() {
+        if args[i] == "--attach" {
+            if let Some(next) = args.get(i + 1) {
+                let p = std::path::PathBuf::from(next);
+                // Resolve `~/` prefix.
+                if let Some(s) = p.to_str() {
+                    if s.starts_with("~/") {
+                        if let Some(home) = std::env::var_os("HOME") {
+                            let resolved = std::path::PathBuf::from(home)
+                                .join(&s[2..]);
+                            paths.push(resolved);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+                paths.push(p);
+                i += 2;
+            } else {
+                eprintln!("--attach requires a file path argument");
+                std::process::exit(1);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    paths
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
+    let attach_paths = parse_attach_paths(&std::env::args().collect::<Vec<_>>());
+
     let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
     let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
+
+    // Ingest any --attach files before agent initialization so that
+    // KmsContext::initialize() picks them up in available_documents.
+    for path in &attach_paths {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("--attach: failed to read {}: {}", path.display(), e);
+                std::process::exit(1);
+            }
+        };
+        let title = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "untitled".to_string());
+        let source = path.to_string_lossy().to_string();
+        match svc.ingest_document(&title, Some(&source), &content).await {
+            Ok(doc) => {
+                eprintln!(
+                    "--attach: ingested \"{}\" ({} chunks, {} chars)",
+                    doc.title, doc.chunk_count, doc.char_count,
+                );
+            }
+            Err(e) => {
+                eprintln!("--attach: failed to ingest \"{}\": {}", title, e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     let raw_settings = load_settings();
     let provider_configs: Vec<ProviderConfig> = raw_settings.providers;
@@ -160,14 +226,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parallel_ctx.initialize().await.map_err(|e| e.to_string())?;
 
         let sub_factory: Arc<
-            dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> dendrite_tools::SubAgentConfig
+            dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> dendrite_tools::SubAgentConfig
                 + Send
                 + Sync,
-        > = Arc::new(|sub_svc, _pool| {
+        > = Arc::new(|sub_svc, _pool, staging_path| {
             let ctx = Arc::new(agent_compose::SubTreeComposeContext::new(sub_svc.clone()));
+            // Seed the sub-agent's snapshot with a one-shot `local_view`
+            // of the staging subtree. The dispatch awaits this future
+            // before spawning the sub-agent.
+            let ctx_for_init = ctx.clone();
+            let path_for_init = staging_path.clone();
+            let init: std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+            > = Box::pin(async move { ctx_for_init.initialize(&path_for_init).await });
             dendrite_tools::SubAgentConfig {
                 context: ctx,
                 system_prompt: agent_compose::SUBTREE_COMPOSE_PROMPT,
+                init: Some(init),
             }
         });
 

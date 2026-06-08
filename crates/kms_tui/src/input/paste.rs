@@ -25,6 +25,15 @@ pub fn summarize_paste(content: &str) -> Option<String> {
     }
 }
 
+/// Decide whether a text content should be ingested as a document
+/// (i.e. uploaded to the document buffer layer rather than sent
+/// directly to the LLM). Uses the same thresholds as paste
+/// summarisation.
+pub fn should_ingest_as_document(content: &str) -> bool {
+    content.lines().count().max(1) >= PASTE_SUMMARY_LINE_THRESHOLD
+        || content.chars().count() > PASTE_SUMMARY_LEN_THRESHOLD
+}
+
 #[cfg(test)]
 mod paste_summary_tests {
     use super::{summarize_paste, PASTE_SUMMARY_LEN_THRESHOLD, PASTE_SUMMARY_LINE_THRESHOLD};

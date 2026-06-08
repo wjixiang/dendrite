@@ -1,9 +1,10 @@
 //! `ParallelComposeContext` — the orchestrator agent's context.
 //!
-//! A pure KMS-backed context (same read/write pattern as [`KmsContext`]).
-//! The system prompt and tool set (including `kms_parallel_dispatch` and
-//! `kms_merge_subtree`) are configured at the builder call site, not
-//! inside the context.
+//! Stateless query model: `initialize()` injects a one-shot root
+//! `local_view` and `write()` is a no-op. The orchestrator analyses
+//! the user's input and dispatches work via `kms_parallel_dispatch`;
+//! it does not maintain a navigation pointer, so a single startup
+//! snapshot is enough.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,8 +12,6 @@ use std::sync::Arc;
 use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
 use serde_json::json;
-
-use crate::diagnostics::convert_diagnostics_to_json;
 
 pub struct ParallelComposeContext {
     kms: Arc<kms::KmsService>,
@@ -27,14 +26,12 @@ impl ParallelComposeContext {
         }
     }
 
-    /// Initialize context with current KMS state (location + diagnostics).
-    /// Must be called before the agent starts.
+    /// Inject a one-shot root `local_view` so the framework fires
+    /// `inject_context_if_changed` once at startup (version 0 → 1).
     pub async fn initialize(&self) -> Result<(), String> {
-        let location = self.kms.render_location().await?;
-        let diagnostics = self.kms.diagnose().await?;
+        let view = self.kms.get_local_view_by_path("/").await?;
         let mut data = HashMap::new();
-        data.insert("location".into(), json!(location));
-        data.insert("diagnostics".into(), convert_diagnostics_to_json(diagnostics));
+        data.insert("local_view".into(), json!(render_local_view(&view)));
         let mut guard = self.state.write().unwrap();
         *guard = ContextSnapshot { data, version: 1 };
         Ok(())
@@ -47,13 +44,56 @@ impl AgentContext for ParallelComposeContext {
         self.state.read().unwrap().clone()
     }
 
+    /// No-op: the orchestrator's snapshot is fixed at `initialize()` time.
     async fn write(&self, _changes: ContextChanges) -> Result<(), String> {
-        let location = self.kms.render_location().await?;
-        let diagnostics = self.kms.diagnose().await?;
-        let mut guard = self.state.write().unwrap();
-        guard.data.insert("location".into(), json!(location));
-        guard.data.insert("diagnostics".into(), convert_diagnostics_to_json(diagnostics));
-        guard.version += 1;
         Ok(())
     }
+}
+
+fn render_local_view(view: &kms::LocalView) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+
+    let _ = writeln!(s, "## 索引树根节点局部视图（启动时一次性注入）");
+
+    let path_titles: Vec<String> = view
+        .path
+        .iter()
+        .map(|n| {
+            let kind = match n.target_type {
+                kms::TargetType::Knowledge => " [knowledge]",
+                kms::TargetType::Group => "",
+            };
+            format!(
+                "{}{}",
+                n.title.clone().unwrap_or_else(|| "(unnamed)".to_string()),
+                kind
+            )
+        })
+        .collect();
+    let _ = writeln!(s, "### 当前路径: {}", path_titles.join(" / "));
+
+    if view.children.is_empty() {
+        let _ = writeln!(s, "### 直接子节点: (empty)");
+    } else {
+        let _ = writeln!(s, "### 直接子节点 ({}):", view.children.len());
+        for c in &view.children {
+            let kind = match c.target_type {
+                kms::TargetType::Knowledge => " [knowledge]",
+                kms::TargetType::Group => "",
+            };
+            let _ = writeln!(s, "  - {}{}", c.title, kind);
+        }
+    }
+
+    let _ = writeln!(s, "### 子树统计:");
+    let _ = writeln!(s, "  - 总节点数: {}", view.subtree_summary.total_nodes);
+    let _ = writeln!(
+        s,
+        "  - 知识条目: {} / 分组: {}",
+        view.subtree_summary.knowledge_count, view.subtree_summary.group_count
+    );
+    let _ = writeln!(s, "  - 最大深度: {}", view.subtree_summary.max_depth);
+
+    s
 }

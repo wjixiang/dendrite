@@ -14,8 +14,6 @@ use agentik_types::AgentEvent;
 use ratatui::Frame;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use serde_json::Value;
 
 use crate::components::SPINNER_FRAMES;
@@ -478,6 +476,17 @@ fn truncate_str(s: &str, max: usize) -> String {
 
 // ---- Rendering ------------------------------------------------------------
 
+/// Render the sub-agent list into the given `area`.
+///
+/// This is the inner-section variant: it does *not* create its own
+/// bordered `Block`. The caller (typically the Agent chat panel)
+/// supplies the border so the sub-agent list can be visually grouped
+/// with the chat history as one panel.
+///
+/// The sub-agent list is always rendered as content only — no
+/// `Block`, no borders. The header line ("Agents · N total …") is
+/// included so the list is self-describing when read in isolation,
+/// but a caller that wants a separate header can drop it.
 pub fn render_agent_panel(
     f: &mut Frame,
     state: &crate::agent_panel::AgentPanelState,
@@ -485,18 +494,9 @@ pub fn render_agent_panel(
     area: ratatui::layout::Rect,
     spinner_tick: usize,
 ) {
-    let block = Block::default()
-        .title(" Agents ")
-        .borders(Borders::ALL)
-        .border_style(theme.focused_border_style(true));
-    let inner = block.inner(area);
-
     let lines = render_panel_lines(state, theme, area.width as usize, spinner_tick);
-    let paragraph = ratatui::widgets::Paragraph::new(lines).block(block);
+    let paragraph = ratatui::widgets::Paragraph::new(lines);
     f.render_widget(paragraph, area);
-
-    // We don't scroll the agent panel in this initial implementation.
-    let _ = inner; // suppress unused warning
 }
 
 fn render_panel_lines(

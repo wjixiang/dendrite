@@ -17,8 +17,12 @@ use serde_json::Value;
 /// post-mutation context refresh.
 const READONLY_KMS_TOOLS: &[&str] = &[
     "kms_search_entity",
-    "kms_navigate",
     "kms_get_entity_knowledge",
+    "kms_doc_list",
+    "kms_doc_get_chunk",
+    "kms_doc_get_window",
+    "kms_doc_search",
+    "kms_doc_get_metadata",
 ];
 
 /// Returns `true` when a tool is a KMS mutation tool (i.e. starts with the
@@ -105,6 +109,13 @@ mod kms_delete_entity;
 mod kms_delete_index;
 mod kms_delete_knowledge;
 mod kms_delete_nomenclature;
+mod kms_doc_delete;
+mod kms_doc_get_chunk;
+mod kms_doc_get_metadata;
+mod kms_doc_get_window;
+mod kms_doc_ingest;
+mod kms_doc_list;
+mod kms_doc_search;
 mod kms_get_entity;
 mod kms_get_entity_knowledge;
 mod kms_get_knowledge;
@@ -112,7 +123,6 @@ mod kms_link_orphans;
 mod kms_list_entities;
 mod kms_merge_subtree;
 mod kms_move_index;
-mod kms_navigate;
 mod kms_parallel_dispatch;
 mod kms_rename_knowledge;
 mod kms_reorganize_children;
@@ -145,7 +155,6 @@ fn raw_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
         kms_create_knowledge::registration(svc.clone()),
         kms_get_knowledge::registration(svc.clone()),
         kms_create_index::registration(svc.clone()),
-        kms_navigate::registration(svc.clone()),
         kms_reorganize_children::registration(svc.clone()),
         kms_move_index::registration(svc.clone()),
         kms_link_orphans::registration(svc.clone()),
@@ -153,7 +162,15 @@ fn raw_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
         kms_rename_knowledge::registration(svc.clone()),
         kms_delete_knowledge::registration(svc.clone()),
         kms_delete_index::registration(svc.clone()),
-        kms_merge_subtree::registration(svc),
+        kms_merge_subtree::registration(svc.clone()),
+        // Document buffer tools.
+        kms_doc_list::registration(svc.clone()),
+        kms_doc_get_chunk::registration(svc.clone()),
+        kms_doc_get_window::registration(svc.clone()),
+        kms_doc_search::registration(svc.clone()),
+        kms_doc_get_metadata::registration(svc.clone()),
+        kms_doc_ingest::registration(svc.clone()),
+        kms_doc_delete::registration(svc),
     ]
 }
 
@@ -172,14 +189,19 @@ pub fn registrations(
 pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration> {
     vec![
         kms_search_entity::registration(svc.clone()),
-        kms_navigate::registration(svc.clone()),
         kms_get_entity::registration(svc.clone()),
         kms_get_entity_knowledge::registration(svc.clone()),
         kms_get_knowledge::registration(svc.clone()),
         // Stateless local-view tools (preferred for read-only agents).
         kms_view_local::registration(svc.clone()),
         kms_subtree_knowledge::registration(svc.clone()),
-        kms_search_subtree::registration(svc),
+        kms_search_subtree::registration(svc.clone()),
+        // Document buffer read-only tools.
+        kms_doc_list::registration(svc.clone()),
+        kms_doc_get_chunk::registration(svc.clone()),
+        kms_doc_get_window::registration(svc.clone()),
+        kms_doc_search::registration(svc.clone()),
+        kms_doc_get_metadata::registration(svc),
     ]
 }
 
@@ -187,6 +209,11 @@ pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration
 pub struct SubAgentConfig {
     pub context: Arc<dyn AgentContext>,
     pub system_prompt: &'static str,
+    /// Optional async initializer that the dispatch awaits before
+    /// spawning the sub-agent. The factory uses this to seed the
+    /// sub-agent's `local_view` (and any other one-shot setup) without
+    /// blocking the dispatch's async runtime.
+    pub init: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>>,
 }
 
 /// Build the tool set for the parallel compose agent.
@@ -207,7 +234,7 @@ pub fn parallel_registrations(
     ctx: Arc<dyn AgentContext>,
     pool: Arc<ModelPool>,
     sub_context_factory: Arc<
-        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> SubAgentConfig + Send + Sync,
+        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> SubAgentConfig + Send + Sync,
     >,
     process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<std::collections::HashMap<uuid::Uuid, String>>>,

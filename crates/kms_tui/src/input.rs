@@ -7,6 +7,7 @@ mod tests;
 
 pub use agent::spawn_agent_task;
 pub use keys::handle_key_event;
+pub use paste::should_ingest_as_document;
 pub use paste::summarize_paste;
 
 use std::time::Duration;
@@ -450,7 +451,12 @@ pub async fn run_app(
                     {
                         had_input = true;
                         if let Some(placeholder) = summarize_paste(&s) {
-                            app.agent_pastes.push((placeholder.clone(), s));
+                            app.agent_pastes.push(crate::state::PasteEntry {
+                                placeholder: placeholder.clone(),
+                                display: placeholder.clone(),
+                                content: Some(s),
+                                doc_id: None,
+                            });
                             app.agent_input.push_str(&placeholder);
                         } else {
                             app.agent_input.push_str(&s);

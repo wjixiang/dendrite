@@ -34,7 +34,7 @@ pub fn registration(
     svc: Arc<kms::KmsService>,
     pool: Arc<ModelPool>,
     sub_context_factory: Arc<
-        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> crate::SubAgentConfig + Send + Sync,
+        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> crate::SubAgentConfig + Send + Sync,
     >,
     process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
@@ -43,8 +43,8 @@ pub fn registration(
         "kms_parallel_dispatch",
         "Fan out a large knowledge-building task into multiple parallel sub-agents. \
          Each sub-task is given a dedicated staging Group node (a sub-root) under the \
-         system root. Sub-agents run concurrently with isolated pointers and write only \
-         inside their own staging area. When all sub-agents finish, each staging area \
+         system root. Sub-agents run concurrently using a stateless query model and \
+         write only inside their own staging area. When all sub-agents finish, each staging area \
          is folded back into a designated target parent in the main tree (if specified).",
     )
     .parameter(
@@ -92,7 +92,7 @@ async fn dispatch_parallel(
     svc: &Arc<kms::KmsService>,
     pool: &Arc<ModelPool>,
     sub_context_factory: &Arc<
-        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>) -> crate::SubAgentConfig + Send + Sync,
+        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> crate::SubAgentConfig + Send + Sync,
     >,
     process_manager: &Arc<agentik_core::process::ProcessManager>,
     agent_titles: &Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
@@ -139,11 +139,26 @@ async fn dispatch_parallel(
     }
     let mut spawned: Vec<Spawned> = Vec::with_capacity(plan.len());
     for p in plan {
-        let sub_svc = Arc::new(svc.with_pointer(p.staging_id));
-        let config = sub_context_factory(sub_svc.clone(), pool.clone());
-
-        // Trigger initial context population (location + diagnostics).
-        let _ = config.context.write(agentik_core::context::ContextChanges::default()).await;
+        // Sub-agents use a stateless query model: they receive a
+        // one-shot `local_view` of the staging subtree and never rely
+        // on a pinned global pointer. The shared `svc` is passed
+        // directly — writes use `parent_ref` (title), reads use
+        // absolute paths via `kms_view_local`.
+        let sub_svc = svc.clone();
+        // The absolute path of the staging Group we just created,
+        // rooted at the system root (e.g. "/心血管疾病"). The factory
+        // closure uses it to seed the sub-agent's `local_view`.
+        let staging_path = format!("/{}", p.sub_task.staging_title);
+        let mut config = sub_context_factory(sub_svc.clone(), pool.clone(), staging_path.clone());
+        if let Some(init) = config.init.take() {
+            init.await.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                format!(
+                    "initialize sub-agent '{}' context: {e}",
+                    p.sub_task.staging_title
+                )
+                .into()
+            })?;
+        }
 
         let content = p.sub_task.content.clone();
         let staging_title = p.sub_task.staging_title.clone();

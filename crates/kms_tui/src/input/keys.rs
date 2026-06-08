@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::state::{Action, App, Panel, SettingsPane};
+use crate::state::{Action, App, ChatFocus, Panel, SettingsPane};
 
 /// Half-page scroll step for list panels (approximation of
 /// half the visible area).
@@ -191,22 +191,53 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         KeyEvent {
             code: KeyCode::Tab, ..
         } => {
+            // When the Agent panel is focused, `Tab` first tries to
+            // step into the embedded sub-agent list (if there's
+            // anything to focus on). This keeps the previous
+            // panel-cycling behavior for everyone else, and gives
+            // the user a discoverable way to reach the sub-agent
+            // list without remembering a new key. When the sub-list
+            // is empty or focus is already on it, fall through to
+            // the normal panel cycle.
+            if app.focused == Panel::Agent
+                && app.chat_focus == ChatFocus::Messages
+                && !app.agent_panel.agents.is_empty()
+            {
+                app.chat_focus = ChatFocus::AgentsPanel;
+                return Action::None;
+            }
             let mode = crate::layout::LayoutMode::from_width(0);
             let order = mode.panel_order();
             let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
             let next = (idx + 1) % order.len();
             app.focused = order[next];
+            // Reset sub-focus to Messages when leaving the Agent
+            // panel so the next visit starts on the chat history.
+            if order[next] != Panel::Agent {
+                app.chat_focus = ChatFocus::Messages;
+            }
             Action::None
         }
         KeyEvent {
             code: KeyCode::BackTab,
             ..
         } => {
+            // Symmetric with Tab: when on the AgentsPanel sub-focus,
+            // step back into the Messages sub-focus first.
+            if app.focused == Panel::Agent
+                && app.chat_focus == ChatFocus::AgentsPanel
+            {
+                app.chat_focus = ChatFocus::Messages;
+                return Action::None;
+            }
             let mode = crate::layout::LayoutMode::from_width(0);
             let order = mode.panel_order();
             let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
             let prev = if idx == 0 { order.len() - 1 } else { idx - 1 };
             app.focused = order[prev];
+            if order[prev] != Panel::Agent {
+                app.chat_focus = ChatFocus::Messages;
+            }
             Action::None
         }
         KeyEvent {
@@ -218,39 +249,63 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
             let prev = if idx == 0 { order.len() - 1 } else { idx - 1 };
             app.focused = order[prev];
+            if order[prev] != Panel::Agent {
+                app.chat_focus = ChatFocus::Messages;
+            }
             Action::None
         }
         KeyEvent {
             code: KeyCode::Char('L'),
             ..
         } => {
+            // Mirror Tab: when on Messages sub-focus and the sub-list
+            // is non-empty, step into it; otherwise cycle panels.
+            if app.focused == Panel::Agent
+                && app.chat_focus == ChatFocus::Messages
+                && !app.agent_panel.agents.is_empty()
+            {
+                app.chat_focus = ChatFocus::AgentsPanel;
+                return Action::None;
+            }
             let mode = crate::layout::LayoutMode::from_width(0);
             let order = mode.panel_order();
             let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
             let next = (idx + 1) % order.len();
             app.focused = order[next];
+            if order[next] != Panel::Agent {
+                app.chat_focus = ChatFocus::Messages;
+            }
             Action::None
         }
-        // --- Agents panel keybindings ---
+        // --- Sub-agent list keybindings (when sub-focus is AgentsPanel) ---
         KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
             ..
-        } if app.focused == Panel::Agents => {
+        } if app.focused == Panel::Agent
+            && app.chat_focus == ChatFocus::AgentsPanel
+            && !app.agent_panel.agents.is_empty() =>
+        {
             app.agent_panel.toggle_selected();
             Action::None
         }
         KeyEvent {
             code: KeyCode::Char('j') | KeyCode::Down,
             ..
-        } if app.focused == Panel::Agents => {
+        } if app.focused == Panel::Agent
+            && app.chat_focus == ChatFocus::AgentsPanel
+            && !app.agent_panel.agents.is_empty() =>
+        {
             app.agent_panel.move_selection(1);
             Action::None
         }
         KeyEvent {
             code: KeyCode::Char('k') | KeyCode::Up,
             ..
-        } if app.focused == Panel::Agents => {
+        } if app.focused == Panel::Agent
+            && app.chat_focus == ChatFocus::AgentsPanel
+            && !app.agent_panel.agents.is_empty() =>
+        {
             app.agent_panel.move_selection(-1);
             Action::None
         }
@@ -258,7 +313,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             code: KeyCode::Char('e'),
             modifiers: KeyModifiers::NONE,
             ..
-        } if app.focused == Panel::Agents => {
+        } if app.focused == Panel::Agent
+            && app.chat_focus == ChatFocus::AgentsPanel
+            && !app.agent_panel.agents.is_empty() =>
+        {
             app.agent_panel.expand_all();
             Action::None
         }
@@ -266,7 +324,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             code: KeyCode::Char('c'),
             modifiers: KeyModifiers::NONE,
             ..
-        } if app.focused == Panel::Agents => {
+        } if app.focused == Panel::Agent
+            && app.chat_focus == ChatFocus::AgentsPanel
+            && !app.agent_panel.agents.is_empty() =>
+        {
             app.agent_panel.collapse_all();
             Action::None
         }
@@ -405,7 +466,6 @@ fn handle_page_down(app: &mut App) -> Action {
                 as u16;
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }
 
@@ -425,7 +485,6 @@ fn handle_page_up(app: &mut App) -> Action {
             app.scroll_diag = app.scroll_diag.saturating_sub(FULL_PAGE as u16);
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }
 
@@ -451,7 +510,6 @@ fn handle_half_page_down(app: &mut App) -> Action {
                 .min(app.diagnostic_lines.len().saturating_sub(1)) as u16;
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }
 
@@ -471,7 +529,6 @@ fn handle_half_page_up(app: &mut App) -> Action {
             app.scroll_diag = app.scroll_diag.saturating_sub(HALF_PAGE as u16);
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }
 
@@ -497,7 +554,6 @@ fn handle_scroll_down(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => handle_agent_scroll_down(app),
-        Panel::Agents => Action::None,
     }
 }
 
@@ -523,7 +579,6 @@ fn handle_scroll_up(app: &mut App) -> Action {
             app.agent_scroll = app.agent_scroll.saturating_sub(1);
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }
 
@@ -548,7 +603,6 @@ fn handle_home(app: &mut App) -> Action {
             app.agent_scroll = 0;
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }
 
@@ -575,6 +629,5 @@ fn handle_end(app: &mut App) -> Action {
             app.agent_auto_scroll = true;
             Action::None
         }
-        Panel::Agents => Action::None,
     }
 }

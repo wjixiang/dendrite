@@ -12,6 +12,8 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .parameter("knowledge_type", "string", "'aspect' or 'relation'")
     .parameter("entities", "array", "Array of all entity names mentioned in the content (wrapping each in [[...]])")
     .parameter("content", "string", "The knowledge content/notes — use [[entity name]] to mark every entity mention")
+    .parameter("source_document_id", "string", "Optional: UUID of the source document (for provenance tracking)")
+    .parameter("source_chunk_idx", "integer", "Optional: chunk index in the source document")
     .required("title")
     .required("knowledge_type")
     .required("entities")
@@ -38,8 +40,27 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
 
                 let content = content.map(|c| flatten_nested_headings(&c));
 
+                // Parse optional source provenance.
+                let source = match (
+                    input["source_document_id"].as_str(),
+                    input["source_chunk_idx"].as_u64(),
+                ) {
+                    (Some(doc_id_str), Some(chunk_idx)) => {
+                        let doc_id = uuid::Uuid::parse_str(doc_id_str)
+                            .map_err(|e| e.to_string())?;
+                        Some((doc_id, chunk_idx as usize))
+                    }
+                    _ => None,
+                };
+
+                // Resolve entity refs to UUIDs.
+                let mut entities = Vec::with_capacity(entity_refs.len());
+                for i in 0..entity_refs.len() {
+                    entities.push(svc.resolve(entity_refs[i]).await?);
+                }
+
                 let knowledge = svc
-                    .create_knowledge_by_ref(title, knowledge_type, entity_refs, content)
+                    .create_knowledge_with_source(title, knowledge_type, entities, content, source)
                     .await?;
 
                 Ok(ToolResult::success_json(

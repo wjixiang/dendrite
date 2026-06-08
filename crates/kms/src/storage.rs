@@ -5,8 +5,9 @@ pub mod types;
 
 use sqlx::SqlitePool;
 
-use crate::storage::database::sqlite::{SqliteEntityRepo, SqliteIndexRepo, SqliteKnowledgeRepo};
-use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
+use crate::storage::database::sqlite::{
+    SqliteDocumentRepo, SqliteEntityRepo, SqliteIndexRepo, SqliteKnowledgeRepo,
+};
 
 #[derive(Clone)]
 pub struct Storage {
@@ -14,6 +15,7 @@ pub struct Storage {
     pub entity: SqliteEntityRepo,
     pub knowledge: SqliteKnowledgeRepo,
     pub index: SqliteIndexRepo,
+    pub document: SqliteDocumentRepo,
 }
 
 impl Storage {
@@ -27,7 +29,8 @@ impl Storage {
             pool: pool.clone(),
             entity: SqliteEntityRepo::new(pool.clone()),
             knowledge: SqliteKnowledgeRepo::new(pool.clone()),
-            index: SqliteIndexRepo::new(pool),
+            index: SqliteIndexRepo::new(pool.clone()),
+            document: SqliteDocumentRepo::new(pool),
         }
     }
 

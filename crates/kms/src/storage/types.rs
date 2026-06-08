@@ -49,6 +49,12 @@ pub struct Knowledge {
     pub knowledge_type: KnowledgeType,
     pub entities: Vec<Uuid>,
     pub content: Option<String>,
+
+    /// 可选：来源文档 ID（documents 表外键），用于追溯知识是从哪份文档提取的。
+    pub source_document_id: Option<Uuid>,
+
+    /// 可选：来源文档的 chunk index，更精确地定位知识来源。
+    pub source_chunk_idx: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
