@@ -7,9 +7,10 @@
 //! knowledge construction; once they finish, this agent reports the
 //! results to the user.
 //!
-//! Like the other contexts in this crate, the orchestrator uses the
-//! **stateless query model** — a one-shot root `local_view` at
-//! startup, then everything else is path-based tool calls.
+//! Like the other contexts in this crate, the orchestrator uses a
+//! **diagnostics-aware query model** — a one-shot root `local_view`
+//! and diagnostic snapshot at startup, with diagnostics refreshed
+//! after every mutation tool call. All tree reads are path-based.
 
 pub const PARALLEL_COMPOSE_PROMPT: &str = concat!(
     "## 并行知识整理编排 Agent（主 Agent）\n",

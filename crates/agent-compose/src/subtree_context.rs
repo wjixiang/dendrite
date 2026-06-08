@@ -2,9 +2,10 @@
 //! build knowledge inside a dedicated staging sub-tree.
 //!
 //! Stateless query model: `initialize(path)` injects a one-shot
-//! `local_view` of the staging subtree (or any other path) and
-//! `write()` is a no-op. Sub-agents navigate by absolute path via
-//! `kms_view_local`; they no longer rely on a pinned global pointer.
+//! `local_view` of the staging subtree and a diagnostic snapshot.
+//! After each mutation tool call, `write()` re-runs diagnostics and
+//! bumps the version so the framework re-injects the updated snapshot.
+//! Sub-agents navigate by absolute path via `kms_view_local`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,6 +13,8 @@ use std::sync::Arc;
 use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
 use serde_json::json;
+
+use crate::context::render_diagnostics;
 
 pub struct SubTreeComposeContext {
     kms: Arc<kms::KmsService>,
@@ -26,19 +29,21 @@ impl SubTreeComposeContext {
         }
     }
 
-    /// Inject a one-shot `local_view` of the staging subtree at `path`.
-    /// The caller (e.g. `kms_parallel_dispatch`) provides the absolute
-    /// path of the staging Group it just created. After this returns,
-    /// the framework fires `inject_context_if_changed` once
-    /// (version 0 → 1) and the snapshot is never refreshed.
+    /// Inject a one-shot `local_view` of the staging subtree at `path`
+    /// and a diagnostic snapshot. The caller (e.g. `kms_parallel_dispatch`)
+    /// provides the absolute path of the staging Group it just created.
+    /// After this returns, the framework fires `inject_context_if_changed`
+    /// once (version 0 → 1).
     pub async fn initialize(&self, path: &str) -> Result<(), String> {
         let view = self.kms.get_local_view_by_path(path).await?;
+        let diags = self.kms.diagnose().await.unwrap_or_default();
         let mut data = HashMap::new();
         data.insert("local_view".into(), json!(render_local_view(&view)));
         data.insert(
             "staging_path".into(),
             json!(path.to_string()),
         );
+        data.insert("diagnostics".into(), json!(render_diagnostics(&diags)));
         let mut guard = self.state.write().unwrap();
         *guard = ContextSnapshot { data, version: 1 };
         Ok(())
@@ -47,14 +52,19 @@ impl SubTreeComposeContext {
 
 #[async_trait]
 impl AgentContext for SubTreeComposeContext {
-    fn read(&self) -> ContextSnapshot {
+    async fn read(&self) -> ContextSnapshot {
         self.state.read().unwrap().clone()
     }
 
-    /// No-op: the snapshot is fixed at `initialize()` time. Sub-agents
-    /// explore the staging area on demand via `kms_view_local(path)`
-    /// using the absolute staging path.
+    /// Re-run diagnostics and bump the snapshot version so the
+    /// framework re-injects the updated diagnostic block.
     async fn write(&self, _changes: ContextChanges) -> Result<(), String> {
+        let diags = self.kms.diagnose().await.unwrap_or_default();
+        let mut guard = self.state.write().unwrap();
+        guard
+            .data
+            .insert("diagnostics".into(), json!(render_diagnostics(&diags)));
+        guard.version += 1;
         Ok(())
     }
 }

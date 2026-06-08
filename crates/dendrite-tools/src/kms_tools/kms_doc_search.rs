@@ -15,7 +15,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .required("doc_id")
     .parameter("keyword", "string", "Keyword to search for (case-insensitive).")
     .required("keyword")
-    .parameter("top_k", "integer", "Maximum number of hits to return (default 10).")
+    .parameter("top_k", "number", "Maximum number of hits to return (default 10).")
     .build();
 
     agentik_core::tools::ToolRegistration::new(
@@ -25,7 +25,10 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
                 let keyword = input["keyword"].as_str().ok_or("missing 'keyword'")?;
-                let top_k = input["top_k"].as_u64().unwrap_or(10) as usize;
+                let top_k = input["top_k"]
+                    .as_f64()
+                    .or_else(|| input["top_k"].as_u64().map(|v| v as f64))
+                    .unwrap_or(10.0) as usize;
                 let doc_id = uuid::Uuid::parse_str(doc_id_str).map_err(|e| e.to_string())?;
 
                 let hits = svc.search_document(doc_id, keyword, top_k).await?;

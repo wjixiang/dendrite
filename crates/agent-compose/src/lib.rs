@@ -9,12 +9,11 @@
 //! - [`subtree_context`]: [`SubTreeComposeContext`] for parallel sub-agents.
 //! - [`parallel_context`]: [`ParallelComposeContext`] for the orchestrator.
 //!
-//! All three contexts follow the **stateless query model** used by
-//! [`agent_knowledge`]: `initialize()` injects a one-shot `local_view` of the
-//! index root (or the staging subtree for sub-agents) at version 1, and
-//! `write()` is a no-op. There is no per-tool-call re-injection of the
-//! global pointer, the rendered "location" block, or the diagnostic
-//! snapshot — agents inspect the tree on demand via `kms_view_local`.
+//! All three contexts follow a **diagnostics-aware query model**:
+//! `initialize()` injects a one-shot `local_view` and diagnostic snapshot
+//! at version 1, and `write()` re-runs diagnostics after each mutation
+//! tool call, bumps the version, so the framework re-injects the updated
+//! diagnostic block into the agent's memory at the next loop boundary.
 
 mod context;
 mod parallel_context;

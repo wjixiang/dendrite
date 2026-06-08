@@ -1,11 +1,12 @@
 //! [`AgentContext`] implementation backed by a [`kms::KmsService`].
 //!
 //! Stateless query model: the context is initialised once with a
-//! `local_view` of the index root, and `write()` is a no-op. There is
-//! no per-tool-call re-injection of the global pointer, the rendered
-//! "location" block, or the diagnostic snapshot — agents inspect the
-//! tree on demand via [`kms::KmsService::get_local_view_by_path`]
-//! (exposed as the `kms_view_local` tool). This mirrors
+//! `local_view` of the index root and a diagnostic snapshot. After
+//! each mutation tool call, `write()` re-runs diagnostics and bumps
+//! the version so the framework re-injects the updated snapshot into
+//! the agent's memory. Agents can also inspect the tree on demand via
+//! [`kms::KmsService::get_local_view_by_path`] (exposed as the
+//! `kms_view_local` tool). This mirrors
 //! [`agentik_knowledge::KnowledgeContext`](../../agent-knowledge/src/context.rs).
 
 use std::collections::HashMap;
@@ -33,21 +34,21 @@ impl KmsContext {
         Ok(Self::new(Arc::new(svc)))
     }
 
-    /// Inject a one-shot `local_view` of the index root plus a list
-    /// of available documents. Must be called before the agent starts
-    /// so the framework's `inject_context_if_changed` fires once at
-    /// startup (version 0 → 1). Because `write()` is a no-op, the
-    /// version never changes again and the snapshot is never
-    /// re-injected.
+    /// Inject a one-shot `local_view` of the index root, a list of
+    /// available documents, and the current diagnostic snapshot.
+    /// Must be called before the agent starts so the framework's
+    /// `inject_context_if_changed` fires once at startup (version 0 → 1).
     pub async fn initialize(&self) -> Result<(), String> {
         let view = self.kms.get_local_view_by_path("/").await?;
         let docs = self.kms.list_documents().await.unwrap_or_default();
+        let diags = self.kms.diagnose().await.unwrap_or_default();
         let mut data = HashMap::new();
         data.insert("local_view".into(), json!(render_local_view(&view)));
         data.insert(
             "available_documents".into(),
             json!(render_document_index(&docs)),
         );
+        data.insert("diagnostics".into(), json!(render_diagnostics(&diags)));
         let mut guard = self.state.write().unwrap();
         *guard = ContextSnapshot { data, version: 1 };
         Ok(())
@@ -56,15 +57,20 @@ impl KmsContext {
 
 #[async_trait]
 impl AgentContext for KmsContext {
-    fn read(&self) -> ContextSnapshot {
+    async fn read(&self) -> ContextSnapshot {
         self.state.read().unwrap().clone()
     }
 
-    /// No-op: the snapshot is fixed at `initialize()` time. The compose
-    /// agent inspects the tree on demand via `kms_view_local` rather
-    /// than receiving a refreshed location/diagnostics block on every
-    /// tool call.
+    /// Re-run diagnostics and bump the snapshot version so the
+    /// framework re-injects the updated diagnostic block into the
+    /// agent's memory at the next loop boundary.
     async fn write(&self, _changes: ContextChanges) -> Result<(), String> {
+        let diags = self.kms.diagnose().await.unwrap_or_default();
+        let mut guard = self.state.write().unwrap();
+        guard
+            .data
+            .insert("diagnostics".into(), json!(render_diagnostics(&diags)));
+        guard.version += 1;
         Ok(())
     }
 }
@@ -175,6 +181,37 @@ fn render_document_index(docs: &[kms::Document]) -> String {
          再用 `kms_doc_get_window(\"\", chunk_index=17, before=1, after=1)` 读取上下文。\
          知识创建时把 `source_document_id` + `source_chunk_idx` 一起传入以便追溯。"
     );
+
+    s
+}
+
+/// Render a list of [`kms::Diagnostic`] items into a human-readable
+/// text block suitable for LLM injection.
+pub(crate) fn render_diagnostics(diags: &[kms::Diagnostic]) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+
+    if diags.is_empty() {
+        let _ = writeln!(s, "## 诊断（无问题）");
+        return s;
+    }
+
+    let _ = writeln!(s, "## 诊断（{} 条问题）", diags.len());
+    for d in diags {
+        let _ = writeln!(
+            s,
+            "- [{}] {} — {}",
+            d.severity.label(),
+            d.code,
+            d.message
+        );
+        if !d.location.is_empty() {
+            let _ = writeln!(s, "  位置: {}", d.location);
+        }
+        for action in &d.suggested_actions {
+            let _ = writeln!(s, "  → {}", action);
+        }
+    }
 
     s
 }

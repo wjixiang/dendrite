@@ -2,11 +2,14 @@
 //!
 //! The prompt encodes the operating contract for any agent that creates
 //! entities, knowledge entries, or index nodes. The agent uses a
-//! **stateless query model** (mirroring `agent-knowledge`):
+//! **diagnostics-aware query model** (mirroring `agent-knowledge`):
 //!
 //! - A `local_view` of the index root is injected once at startup.
+//! - A diagnostic snapshot is injected at startup and **refreshed after
+//!   every mutation tool call**, so the agent always sees up-to-date
+//!   diagnostics in the context-update messages.
 //! - All tree reads use `kms_view_local(<absolute path>)` — there is no
-//!   "current pointer" to navigate and no per-tool-call context refresh.
+//!   "current pointer" to navigate.
 //! - Writes always supply a `parent_ref` (an absolute or near-absolute
 //!   title), so the agent never relies on a global pointer either.
 
@@ -22,7 +25,8 @@ pub const KMS_SYSTEM_PROMPT: &str = concat!(
     "  - 内容格式：使用 `[[实体名]]` 维基风格双括号标注实体提及。示例：`RAAS抑制剂包括[[ACEI`、`ARB`、`ARNI]]。其中[[ARNI]]效果最佳。`\n",
     "- **Index（索引）**：树状组织层，知识体系的骨架。所有索引操作都使用**绝对路径**（如 `/心血管/心力衰竭`）定位父节点。\n\n",
     "### 无状态查询模式（关键）\n",
-    "**没有全局指针。** 启动时你只收到一份根节点的 `local_view` 快照，**之后该快照永远不会被刷新**——你不会在工具调用之间收到新的位置/诊断更新。\n",
+    "**没有全局指针。** 启动时你只收到一份根节点的 `local_view` 快照，该快照不会被刷新。\n",
+    "**诊断信息自动刷新。** 每次你执行变更类工具（创建/修改/删除索引、知识、实体）后，系统会自动重新运行诊断并将最新结果注入到你的上下文中——你会在下一次回复前看到 `[context-update]` 消息中的诊断快照。\n",
     "需要查看树中任何位置时，**用 `kms_view_local(<绝对路径>)` 主动查询**。每次调用都是无副作用的，可以任意次数地调用任意节点。\n",
     "#### 行为准则：\n",
     "1. **不要假设树结构不变**：每次写操作后，可能影响目标子树——若需要确认当前状态，**主动**调用 `kms_view_local` 而不是依赖已注入的快照。\n",

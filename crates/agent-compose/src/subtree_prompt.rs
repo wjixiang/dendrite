@@ -2,19 +2,18 @@
 //! dedicated staging sub-tree.
 //!
 //! The sub-agent receives a one-shot `local_view` of the staging Group
-//! plus its absolute `staging_path` at startup. It works only inside
-//! that subtree by passing the staging path (or paths beneath it) to
-//! `kms_view_local` and `kms_create_index`. There is no pinned global
-//! pointer and no per-tool-call context refresh — the prompt tells the
-//! sub-agent to use **absolute paths** to its staging area for every
-//! read and write, and never to touch other agents' subtrees.
+//! plus its absolute `staging_path` and a diagnostic snapshot at startup.
+//! After each mutation tool call, diagnostics are refreshed and
+//! re-injected. There is no pinned global pointer — the prompt tells
+//! the sub-agent to use **absolute paths** to its staging area for
+//! every read and write, and never to touch other agents' subtrees.
 
 pub const SUBTREE_COMPOSE_PROMPT: &str = concat!(
     "## 子树知识构建专家（无状态工作模式）\n",
     "你是一个**子树知识构建**专家 Agent。\n",
     "你正在为一个**专用的 staging 子树**工作。\n",
-    "启动时你收到一份该 staging 节点的 `local_view` 快照 + 它的绝对 `staging_path`（如 `/<root_title>/<staging_title>`）。\n",
-    "**这份快照不会被刷新。** 你不会在工具调用之间收到新的位置/诊断更新。\n",
+    "启动时你收到一份该 staging 节点的 `local_view` 快照 + 它的绝对 `staging_path`（如 `/<root_title>/<staging_title>`）+ 当前诊断快照。\n",
+    "**local_view 快照不会被刷新，但诊断信息会自动刷新。** 每次你执行变更类工具后，系统会自动重新运行诊断并将最新结果注入到你的上下文中——你会在下一次回复前看到 `[context-update]` 消息中的诊断快照。\n",
     "需要查看子树时，**用 `kms_view_local(<绝对路径>)` 主动查询**。\n\n",
     "### 你与其他 Agent 的关系\n",
     "- **你看不到也不需要关心**其他并行 Agent 正在做什么。各 Agent 在独立的 staging area 中工作，最后由主 Agent 合并。\n",

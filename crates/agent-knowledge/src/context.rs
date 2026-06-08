@@ -40,7 +40,7 @@ impl KnowledgeContext {
 
 #[async_trait]
 impl AgentContext for KnowledgeContext {
-    fn read(&self) -> ContextSnapshot {
+    async fn read(&self) -> ContextSnapshot {
         self.state.read().unwrap().clone()
     }
 
