@@ -13,16 +13,12 @@ pub fn agent_event_to_message(event: AgentEvent) -> Vec<ChatMessage> {
             vec![ChatMessage::Thinking { text, streaming: false }]
         }
         AgentEvent::ToolCall { name, input } => {
-            if name == "kms_parallel_dispatch" {
-                vec![
-                    ChatMessage::ToolCall { name, input },
-                    ChatMessage::ParallelBlock,
-                ]
-            } else {
-                vec![ChatMessage::ToolCall { name, input }]
-            }
+            vec![ChatMessage::ToolCall { name, input }]
         }
-        AgentEvent::ToolResult { ok, content } => vec![ChatMessage::ToolResult { ok, content }],
+        AgentEvent::ToolResult { ok, content } => {
+            let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
+            vec![ChatMessage::ToolResult { ok, content, parsed }]
+        }
         AgentEvent::Done => vec![ChatMessage::Done],
         AgentEvent::Error(msg) => vec![ChatMessage::Error { message: msg }],
         AgentEvent::Requesting => Vec::new(),
@@ -75,8 +71,6 @@ pub fn append_to_streaming_thinking(app: &mut App, token: &str) {
 }
 
 /// Finalize any trailing streaming messages (set `streaming = false`).
-/// Walks from the end of history and stops at the first non-Assistant/
-/// non-Thinking variant so we only affect the most recent cluster.
 pub fn finalize_streaming_history(history: &mut Vec<ChatMessage>) {
     for msg in history.iter_mut().rev() {
         match msg {
@@ -91,11 +85,7 @@ pub fn finalize_streaming_history(history: &mut Vec<ChatMessage>) {
     }
 }
 
-/// Handle a non-delta, non-lifecycle event (LlmResponse, Thinking,
-/// ToolCall, ToolResult, Error). For `LlmResponse`/`Thinking`, we
-/// finalize the in-flight streaming message rather than pushing a
-/// duplicate. For tool events, we finalize streaming first, then push
-/// the new message.
+/// Handle a non-delta, non-lifecycle event.
 pub fn handle_final_event(app: &mut App, event: agentik_types::AgentEvent) {
     let kind = app.agent_kind;
     let history = app.agent_messages_map.get_mut(&kind).unwrap();
@@ -105,36 +95,22 @@ pub fn handle_final_event(app: &mut App, event: agentik_types::AgentEvent) {
             let finalized = history.iter_mut().rev().find(|m| {
                 matches!(m, ChatMessage::Assistant { streaming: true, .. })
             });
-            if let Some(ChatMessage::Assistant {
-                text: streaming_text,
-                streaming,
-            }) = finalized
-            {
+            if let Some(ChatMessage::Assistant { text: streaming_text, streaming }) = finalized {
                 *streaming_text = text;
                 *streaming = false;
             } else {
-                history.push(ChatMessage::Assistant {
-                    text,
-                    streaming: false,
-                });
+                history.push(ChatMessage::Assistant { text, streaming: false });
             }
         }
         AgentEvent::Thinking(text) => {
             let finalized = history.iter_mut().rev().find(|m| {
                 matches!(m, ChatMessage::Thinking { streaming: true, .. })
             });
-            if let Some(ChatMessage::Thinking {
-                text: streaming_text,
-                streaming,
-            }) = finalized
-            {
+            if let Some(ChatMessage::Thinking { text: streaming_text, streaming }) = finalized {
                 *streaming_text = text;
                 *streaming = false;
             } else {
-                history.push(ChatMessage::Thinking {
-                    text,
-                    streaming: false,
-                });
+                history.push(ChatMessage::Thinking { text, streaming: false });
             }
         }
         event => {

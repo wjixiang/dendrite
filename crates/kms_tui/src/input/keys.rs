@@ -1,8 +1,32 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::state::{Action, App, ChatFocus, Panel, SettingsPane};
+use crate::state::{Action, App, Panel, SettingsPane};
+
+/// Half-page scroll step for list panels (approximation of
+/// half the visible area).
+const HALF_PAGE: usize = 5;
+
+/// Full-page scroll step for list panels.
+const FULL_PAGE: usize = 10;
 
 pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
+    // Handle `gg` pending key for vim-style jump-to-top.
+    // Clear the pending state on every new key event; if it was 'g'
+    // and the current key is also 'g', execute the jump.
+    let pending_was_g = app.pending_key.take() == Some('g');
+    if pending_was_g
+        && matches!(
+            key,
+            KeyEvent {
+                code: KeyCode::Char('g'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            }
+        )
+    {
+        return handle_home(app);
+    }
+
     if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
         return match key {
             KeyEvent {
@@ -167,28 +191,11 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         KeyEvent {
             code: KeyCode::Tab, ..
         } => {
-            // When the Agent panel has a parallel dispatch open, the
-            // first Tab toggles between Messages and the ParallelPanel
-            // sub-focus. Only when the user is on Messages (the default
-            // entry point) does Tab advance to the next layout panel.
-            if app.focused == Panel::Agent
-                && app.parallel_panel.is_some()
-                && app.chat_focus == ChatFocus::Messages
-            {
-                app.chat_focus = ChatFocus::ParallelPanel;
-                return Action::None;
-            }
             let mode = crate::layout::LayoutMode::from_width(0);
             let order = mode.panel_order();
             let idx = order.iter().position(|&p| p == app.focused).unwrap_or(0);
             let next = (idx + 1) % order.len();
             app.focused = order[next];
-            // Re-entering the Agent panel from another panel always
-            // lands on Messages, so the next Tab goes to ParallelPanel
-            // (when one is open) rather than skipping over it.
-            if app.focused == Panel::Agent && app.parallel_panel.is_some() {
-                app.chat_focus = ChatFocus::Messages;
-            }
             Action::None
         }
         KeyEvent {
@@ -224,18 +231,46 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             app.focused = order[next];
             Action::None
         }
+        // --- Agents panel keybindings ---
         KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
             ..
-        } if app.focused == Panel::Agent
-            && app.chat_focus == ChatFocus::ParallelPanel =>
-        {
-            if let Some(panel) = app.parallel_panel.as_mut() {
-                panel.toggle_selected();
-            }
+        } if app.focused == Panel::Agents => {
+            app.agent_panel.toggle_selected();
             Action::None
         }
+        KeyEvent {
+            code: KeyCode::Char('j') | KeyCode::Down,
+            ..
+        } if app.focused == Panel::Agents => {
+            app.agent_panel.move_selection(1);
+            Action::None
+        }
+        KeyEvent {
+            code: KeyCode::Char('k') | KeyCode::Up,
+            ..
+        } if app.focused == Panel::Agents => {
+            app.agent_panel.move_selection(-1);
+            Action::None
+        }
+        KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } if app.focused == Panel::Agents => {
+            app.agent_panel.expand_all();
+            Action::None
+        }
+        KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } if app.focused == Panel::Agents => {
+            app.agent_panel.collapse_all();
+            Action::None
+        }
+        // --- Agent panel: enter input mode ---
         KeyEvent {
             code: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
@@ -244,6 +279,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             app.agent_input_active = true;
             Action::None
         }
+        // --- KE panel: toggle knowledge/entity tab ---
         KeyEvent {
             code: KeyCode::Char('t'),
             modifiers: KeyModifiers::NONE,
@@ -256,52 +292,43 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             app.ke_scroll = 0;
             Action::None
         }
+        // ---------------------------------------------------------------
+        // Tree panel: vim-style keybindings
+        // ---------------------------------------------------------------
+        // `g` (lowercase) on Tree — first press of `gg` (jump to top).
         KeyEvent {
-            code: KeyCode::Char('j') | KeyCode::Down,
-            ..
-        } if app.focused == Panel::Agent
-            && app.chat_focus == ChatFocus::ParallelPanel =>
-        {
-            if let Some(panel) = app.parallel_panel.as_mut() {
-                panel.move_selection(1);
-            }
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Char('k') | KeyCode::Up,
-            ..
-        } if app.focused == Panel::Agent
-            && app.chat_focus == ChatFocus::ParallelPanel =>
-        {
-            if let Some(panel) = app.parallel_panel.as_mut() {
-                panel.move_selection(-1);
-            }
-            Action::None
-        }
-        KeyEvent {
-            code: KeyCode::Char('e'),
+            code: KeyCode::Char('g'),
             modifiers: KeyModifiers::NONE,
             ..
-        } if app.focused == Panel::Agent
-            && app.chat_focus == ChatFocus::ParallelPanel =>
-        {
-            if let Some(panel) = app.parallel_panel.as_mut() {
-                panel.expand_all();
-            }
+        } if app.focused == Panel::Tree => {
+            app.pending_key = Some('g');
             Action::None
         }
+        // Ctrl+d — half-page down.
         KeyEvent {
-            code: KeyCode::Char('c'),
-            modifiers: KeyModifiers::NONE,
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::CONTROL,
             ..
-        } if app.focused == Panel::Agent
-            && app.chat_focus == ChatFocus::ParallelPanel =>
-        {
-            if let Some(panel) = app.parallel_panel.as_mut() {
-                panel.collapse_all();
-            }
-            Action::None
-        }
+        } if app.focused == Panel::Tree => tree_move(app, HALF_PAGE as isize),
+        // Ctrl+u — half-page up.
+        KeyEvent {
+            code: KeyCode::Char('u'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if app.focused == Panel::Tree => tree_move(app, -(HALF_PAGE as isize)),
+        // Ctrl+f — full page down.
+        KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if app.focused == Panel::Tree => tree_move(app, FULL_PAGE as isize),
+        // Ctrl+b — full page up.
+        KeyEvent {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if app.focused == Panel::Tree => tree_move(app, -(FULL_PAGE as isize)),
+        // --- Generic scroll bindings (for panels that aren't handled above) ---
         KeyEvent {
             code: KeyCode::Char('j') | KeyCode::Down,
             ..
@@ -319,50 +346,94 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             ..
         } => handle_page_up(app),
         KeyEvent {
+            code: KeyCode::Home,
+            ..
+        } => handle_home(app),
+        KeyEvent {
             code: KeyCode::End, ..
+        } => handle_end(app),
+        // Shift+G scrolls to the bottom of the focused panel (vim-style).
+        KeyEvent {
+            code: KeyCode::Char('G'),
+            modifiers: KeyModifiers::SHIFT,
+            ..
         } => handle_end(app),
         _ => Action::None,
     }
 }
 
-/// PageDown on the Agent panel scrolls the chat down by the visible
-/// height. This is the natural "scroll one screen" binding in TUI
-/// apps; we apply it to the Agent panel only so it doesn't interfere
-/// with the tree panel (which uses `j`/`k` to move the selection).
-fn handle_page_down(app: &mut App) -> Action {
-    if app.focused == Panel::Agent && app.chat_focus == ChatFocus::Messages {
-        app.agent_auto_scroll = false;
-        // Scroll a typical "page" worth — 10 lines. We don't know the
-        // exact visible height at this point in the event flow; 10 is
-        // a reasonable guess and matches the bounds of typical TUI
-        // chat windows. The renderer clamps to the actual content
-        // length on the next frame.
-        app.agent_scroll = app.agent_scroll.saturating_add(10);
+// ---- Tree helpers ----
+
+/// Move the tree selection by `delta` items (clamped to bounds).
+fn tree_move(app: &mut App, delta: isize) -> Action {
+    if let Some(sel) = app.tree_state.selected() {
+        let new = if delta >= 0 {
+            sel.saturating_add(delta as usize)
+                .min(app.tree_items.len().saturating_sub(1))
+        } else {
+            sel.saturating_sub(delta.unsigned_abs())
+        };
+        app.tree_state.select(Some(new));
+        Action::TreeChanged
+    } else {
+        Action::None
     }
-    Action::None
+}
+
+// ---- Page / half-page scroll (works on all list panels) ----
+
+fn handle_page_down(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Tree => tree_move(app, FULL_PAGE as isize),
+        Panel::Agent => {
+            app.agent_auto_scroll = false;
+            app.agent_scroll = app.agent_scroll.saturating_add(FULL_PAGE as u16);
+            Action::None
+        }
+        Panel::KnowledgeEntity => {
+            let lines = match app.ke_tab {
+                crate::state::KeTab::Knowledge => &app.knowledge_lines,
+                crate::state::KeTab::Entity => &app.entity_lines,
+            };
+            app.ke_scroll =
+                (app.ke_scroll as usize + FULL_PAGE).min(lines.len().saturating_sub(1)) as u16;
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = (app.scroll_diag as usize + FULL_PAGE)
+                .min(app.diagnostic_lines.len().saturating_sub(1))
+                as u16;
+            Action::None
+        }
+        Panel::Agents => Action::None,
+    }
 }
 
 fn handle_page_up(app: &mut App) -> Action {
-    if app.focused == Panel::Agent && app.chat_focus == ChatFocus::Messages {
-        app.agent_auto_scroll = false;
-        app.agent_scroll = app.agent_scroll.saturating_sub(10);
+    match app.focused {
+        Panel::Tree => tree_move(app, -(FULL_PAGE as isize)),
+        Panel::Agent => {
+            app.agent_auto_scroll = false;
+            app.agent_scroll = app.agent_scroll.saturating_sub(FULL_PAGE as u16);
+            Action::None
+        }
+        Panel::KnowledgeEntity => {
+            app.ke_scroll = app.ke_scroll.saturating_sub(FULL_PAGE as u16);
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = app.scroll_diag.saturating_sub(FULL_PAGE as u16);
+            Action::None
+        }
+        Panel::Agents => Action::None,
     }
-    Action::None
 }
+
+// ---- Line-by-line scroll (works on all panels) ----
 
 fn handle_scroll_down(app: &mut App) -> Action {
     match app.focused {
-        Panel::Tree => {
-            if let Some(sel) = app.tree_state.selected() {
-                let next = sel
-                    .saturating_add(1)
-                    .min(app.tree_items.len().saturating_sub(1));
-                app.tree_state.select(Some(next));
-                Action::TreeChanged
-            } else {
-                Action::None
-            }
-        }
+        Panel::Tree => tree_move(app, 1),
         Panel::KnowledgeEntity => {
             let lines = match app.ke_tab {
                 crate::state::KeTab::Knowledge => &app.knowledge_lines,
@@ -380,20 +451,11 @@ fn handle_scroll_down(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => handle_agent_scroll_down(app),
+        Panel::Agents => Action::None,
     }
 }
 
-/// Scroll the chat panel down by one line. Used by `j` / `Down` when
-/// the user is on the Messages sub-focus of the Agent panel.
-/// Any manual scroll disables auto-follow so the next streamed event
-/// doesn't snap the view back to the bottom.
 fn handle_agent_scroll_down(app: &mut App) -> Action {
-    if app.chat_focus != ChatFocus::Messages {
-        // On the ParallelPanel sub-focus, `j` / `k` move the sub-agent
-        // selection (handled in the Tab / j/k arms above). When the
-        // user is in input mode or the agent is running, no-op.
-        return Action::None;
-    }
     app.agent_auto_scroll = false;
     app.agent_scroll = app.agent_scroll.saturating_add(1);
     Action::None
@@ -401,12 +463,7 @@ fn handle_agent_scroll_down(app: &mut App) -> Action {
 
 fn handle_scroll_up(app: &mut App) -> Action {
     match app.focused {
-        Panel::Tree => {
-            if let Some(sel) = app.tree_state.selected() {
-                app.tree_state.select(Some(sel.saturating_sub(1)));
-            }
-            Action::None
-        }
+        Panel::Tree => tree_move(app, -1),
         Panel::KnowledgeEntity => {
             app.ke_scroll = app.ke_scroll.saturating_sub(1);
             Action::None
@@ -416,18 +473,46 @@ fn handle_scroll_up(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => {
-            if app.chat_focus != ChatFocus::Messages {
-                return Action::None;
-            }
             app.agent_auto_scroll = false;
             app.agent_scroll = app.agent_scroll.saturating_sub(1);
             Action::None
         }
+        Panel::Agents => Action::None,
+    }
+}
+
+// ---- Jump to top / bottom ----
+
+fn handle_home(app: &mut App) -> Action {
+    match app.focused {
+        Panel::Tree => {
+            app.tree_state.select(Some(0));
+            Action::TreeChanged
+        }
+        Panel::KnowledgeEntity => {
+            app.ke_scroll = 0;
+            Action::None
+        }
+        Panel::Diagnostics => {
+            app.scroll_diag = 0;
+            Action::None
+        }
+        Panel::Agent => {
+            app.agent_auto_scroll = false;
+            app.agent_scroll = 0;
+            Action::None
+        }
+        Panel::Agents => Action::None,
     }
 }
 
 fn handle_end(app: &mut App) -> Action {
     match app.focused {
+        Panel::Tree => {
+            let last = app.tree_items.len().saturating_sub(1);
+            app.tree_state.select(Some(last));
+            Action::TreeChanged
+        }
         Panel::KnowledgeEntity => {
             let lines = match app.ke_tab {
                 crate::state::KeTab::Knowledge => &app.knowledge_lines,
@@ -441,15 +526,9 @@ fn handle_end(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => {
-            // End on the Agent panel re-engages auto-follow. The
-            // renderer will pin the scroll to the bottom on the next
-            // frame, so any in-flight stream events become visible
-            // immediately. The exact y offset is computed in the
-            // render path from the current line count + visible
-            // area height.
             app.agent_auto_scroll = true;
             Action::None
         }
-        Panel::Tree => Action::None,
+        Panel::Agents => Action::None,
     }
 }

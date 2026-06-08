@@ -21,7 +21,8 @@ pub async fn rebuild_all_agents(app: &mut App, pool: &Arc<agentik_sdk::model::mo
         agent_compose::ParallelComposeContext::new(
             svc_arc,
             pool.clone(),
-            app.parallel_progress_tx.clone(),
+            app.process_manager.clone(),
+            app.agent_titles.clone(),
         ),
     );
 
@@ -58,17 +59,9 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
         return;
     }
 
-    // Snapshot the original input (with any paste placeholders still
-    // embedded) and the side-channel that maps placeholders to full
-    // text. We then drop the side-channel — the agent has what it
-    // needs, and the chat history deliberately keeps the compact form.
     let compact_for_history = user_input.clone();
     let mut pastes = std::mem::take(&mut app.agent_pastes);
 
-    // Assemble the full text for the agent by expanding each
-    // placeholder once. Placeholders the user edited away are kept
-    // in `pastes` in case the user re-inserts them, but normally
-    // they'll be discarded at the end of this scope.
     let mut expanded = user_input;
     for (placeholder, full) in &pastes {
         if expanded.contains(placeholder) {
@@ -76,43 +69,23 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
         }
     }
     pastes.retain(|(placeholder, _)| expanded.contains(placeholder));
+    drop(pastes);
 
     let kind = app.agent_kind;
-    // Push the COMPACT form (with `[Pasted ~N lines]` placeholders
-    // still embedded) to the chat history. This is what mirrors
-    // opencode's design: the chat panel shows the placeholder, not
-    // the full pasted text. The agent still receives the full text
-    // because we expand before injection below.
     app.agent_messages_mut().push(ChatMessage::User {
         text: compact_for_history,
     });
     app.agent_messages_mut().push(ChatMessage::Divider);
     app.agent_running = true;
-    // Re-engage auto-scroll on every new submission so the new
-    // stream is visible from the first byte. The user can still
-    // override with j/k/PgUp/PgDown/End.
     app.agent_auto_scroll = true;
     app.agent_scroll = 0;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.agent_event_rx = Some(rx);
 
-    // The agents map is populated in two places: `App::new` (via
-    // `main.rs`, only when a pool can be built) and
-    // `rebuild_all_agents` (re-run on settings confirm). Both can
-    // legitimately leave the map empty or partially populated — for
-    // example a custom provider whose first request to the upstream
-    // /models endpoint fails, or a transient network blip mid-rebuild.
-    // When that happens the user can still navigate to the Agent
-    // panel, type a long message, and press Enter; we must not panic
-    // on the lookup. Surface a clear error, reset the running flag so
-    // the TUI stays interactive, and drop the half-pushed chat entry.
     let agent_arc = match app.agents.get(&kind).cloned() {
         Some(arc) => arc,
         None => {
-            // Pop the User + Divider entries we just pushed so the
-            // history doesn't accumulate orphaned rows for submissions
-            // that never reached the agent.
             if let Some(history) = app.agent_messages_map.get_mut(&kind) {
                 history.pop(); // Divider
                 history.pop(); // User
@@ -120,7 +93,7 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
             app.agent_running = false;
             app.agent_event_rx = None;
             app.toast.error(format!(
-                "{} agent is not available \u{2014} check the model pool in Settings",
+                "{} agent is not available — check the model pool in Settings",
                 kind.label()
             ));
             return;

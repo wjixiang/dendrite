@@ -6,6 +6,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{ListItem, ListState};
 use tokio::sync::mpsc;
 
+use crate::agent_panel::AgentPanelState;
 use crate::chat::ChatMessage;
 use crate::components::toast::ToastManager;
 use crate::settings::{PoolEntry, ProviderConfig};
@@ -41,6 +42,7 @@ pub enum Panel {
     Tree,
     KnowledgeEntity,
     Agent,
+    Agents,
     Diagnostics,
 }
 
@@ -48,7 +50,8 @@ pub enum Panel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatFocus {
     Messages,
-    ParallelPanel,
+    #[allow(dead_code)]
+    AgentsPanel,
 }
 
 impl Default for ChatFocus {
@@ -63,6 +66,7 @@ impl std::fmt::Display for Panel {
             Panel::Tree => write!(f, "Tree"),
             Panel::KnowledgeEntity => write!(f, "Knowledge"),
             Panel::Agent => write!(f, "Agent"),
+            Panel::Agents => write!(f, "Agents"),
             Panel::Diagnostics => write!(f, "Diag"),
         }
     }
@@ -164,8 +168,8 @@ impl NewProviderForm {
         )
     }
 
-    /// The URL string that should be persisted when the form is
-    /// submitted, based on the current preset selection.
+    /// The URL string that should be persisted when the form
+    /// is submitted, based on the current preset selection.
     pub fn resolved_url(&self) -> String {
         let presets = self.presets();
         match presets.get(self.url_preset_idx) {
@@ -284,16 +288,20 @@ pub struct App {
     /// user pasted.
     pub agent_pastes: Vec<(String, String)>,
 
-    /// Receiver for the parallel-dispatch side-channel.
-    pub parallel_progress_rx: Option<
-        mpsc::UnboundedReceiver<dendrite_tools::parallel_progress::ParallelProgress>,
-    >,
+    /// Singleton ProcessManager that manages all sub-agents spawned
+    /// by parallel dispatch. Owned by the TUI, shared via Arc to the
+    /// tool layer.
+    pub process_manager: Arc<agentik_core::process::ProcessManager>,
 
-    /// Sender side of the parallel-dispatch channel.
-    pub parallel_progress_tx: dendrite_tools::parallel_progress::ParallelProgressTx,
+    /// Broadcast receiver for ProcessManager events (all managed agents).
+    pub process_event_rx: Option<tokio::sync::broadcast::Receiver<agentik_core::process::ProcessEvent>>,
 
-    /// State for the collapsible parallel-dispatch panel.
-    pub parallel_panel: Option<crate::parallel_panel::ParallelPanelState>,
+    /// Shared map from agent UUID to human-readable title. Written by
+    /// the dispatch tool after spawn(), read by the TUI to label agents.
+    pub agent_titles: Arc<std::sync::RwLock<HashMap<uuid::Uuid, String>>>,
+
+    /// State for the dedicated Agent Status panel.
+    pub agent_panel: AgentPanelState,
 
     /// Sub-focus within the Agent panel.
     pub chat_focus: ChatFocus,
@@ -315,6 +323,31 @@ pub struct App {
     pub pool_entries: Vec<PoolEntry>,
     /// When `Some`, the new-provider form is open.
     pub new_provider_form: Option<NewProviderForm>,
+
+    /// Whether the terminal needs to be redrawn. Set `true` when state
+    /// changes (events, key presses, resize); reset after each
+    /// `terminal.draw()`.
+    pub needs_render: bool,
+
+    /// Monotonic version counter for the current agent kind's message
+    /// history. Incremented whenever a message is added, its text is
+    /// appended to during streaming, or the user switches agent kinds.
+    pub message_version: u64,
+
+    /// Cached rendered lines for the agent chat panel.
+    /// `(message_version, range_start, range_end, lines)`. Avoids
+    /// re-running `to_lines()` on every frame when messages haven't
+    /// changed.
+    pub cached_agent_lines: Option<(u64, usize, usize, Vec<Line<'static>>)>,
+
+    /// Cached per-message line-count estimates (from `estimate_lines()`).
+    /// `(message_version, per_message_counts)`. Avoids the O(n) scan
+    /// with JSON parsing on every frame when messages haven't changed.
+    pub cached_estimates: Option<(u64, Vec<usize>)>,
+
+    /// Pending key for two-key vim motions (e.g. `gg` = first `g`
+    /// sets this, second `g` consumes it and jumps to top).
+    pub pending_key: Option<char>,
 }
 
 impl Default for App {
@@ -330,10 +363,8 @@ impl App {
         providers: Vec<SettingsProvider>,
         provider_configs: Vec<ProviderConfig>,
         pool_entries: Vec<PoolEntry>,
-        parallel_progress_tx: dendrite_tools::parallel_progress::ParallelProgressTx,
-        parallel_progress_rx: mpsc::UnboundedReceiver<
-            dendrite_tools::parallel_progress::ParallelProgress,
-        >,
+        process_manager: Arc<agentik_core::process::ProcessManager>,
+        agent_titles: Arc<std::sync::RwLock<HashMap<uuid::Uuid, String>>>,
     ) -> Self {
         let mut tree_state = ListState::default();
         tree_state.select(Some(0));
@@ -358,6 +389,8 @@ impl App {
             m.insert(AgentKind::Parallel, vec![ChatMessage::Divider]);
             m
         };
+
+        let process_event_rx = process_manager.events();
 
         Self {
             should_quit: false,
@@ -389,10 +422,11 @@ impl App {
             agent_input: String::new(),
             agent_input_active: false,
             agent_pastes: Vec::new(),
-            parallel_progress_rx: Some(parallel_progress_rx),
-            parallel_progress_tx,
-            parallel_panel: None,
-            chat_focus: ChatFocus::Messages,
+            process_manager,
+            process_event_rx: Some(process_event_rx),
+            agent_titles,
+            agent_panel: AgentPanelState::default(),
+            chat_focus: ChatFocus::default(),
             last_tree_refresh_at: None,
             settings_modal_open: false,
             settings_pane: SettingsPane::Provider,
@@ -403,6 +437,11 @@ impl App {
             provider_configs,
             pool_entries,
             new_provider_form: None,
+            needs_render: true,
+            message_version: 0,
+            cached_agent_lines: None,
+            cached_estimates: None,
+            pending_key: None,
         }
     }
 
@@ -412,6 +451,12 @@ impl App {
 
     pub fn agent_messages_mut(&mut self) -> &mut Vec<ChatMessage> {
         self.agent_messages_map.get_mut(&self.agent_kind).unwrap()
+    }
+
+    /// Increment the message version counter, invalidating all
+    /// message-related caches.
+    pub fn bump_message_version(&mut self) {
+        self.message_version = self.message_version.wrapping_add(1);
     }
 
     /// Check whether the (provider_id, model) pair is in the current pool.
@@ -445,6 +490,7 @@ impl App {
     }
 
     /// Find a provider by id.
+    #[allow(dead_code)]
     pub fn provider_by_id(&self, id: &str) -> Option<&SettingsProvider> {
         self.providers.iter().find(|p| p.id == id)
     }

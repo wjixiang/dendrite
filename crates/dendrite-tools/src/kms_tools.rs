@@ -88,20 +88,26 @@ pub fn readonly_registrations(svc: Arc<kms::KmsService>) -> Vec<ToolRegistration
 /// pointer is pinned to the sub-agent's staging area. This indirection
 /// lets the caller (typically the `agent-compose` crate) decide
 /// exactly what prompt/tools the sub-agents get.
+///
+/// `process_manager` is the TUI-owned singleton that manages sub-agent
+/// lifecycles. `agent_titles` is a shared map that maps spawned agent
+/// UUIDs to human-readable titles for the TUI's agent status panel.
 pub fn parallel_registrations(
     svc: Arc<kms::KmsService>,
     pool: Arc<ModelPool>,
     sub_context_factory: Arc<
         dyn Fn(Arc<kms::KmsService>) -> Arc<dyn agentik_core::context::AgentContext> + Send + Sync,
     >,
-    progress_tx: crate::parallel_progress::ParallelProgressTx,
+    process_manager: Arc<agentik_core::process::ProcessManager>,
+    agent_titles: Arc<std::sync::RwLock<std::collections::HashMap<uuid::Uuid, String>>>,
 ) -> Vec<ToolRegistration> {
     let mut tools = registrations(svc.clone());
     tools.push(kms_parallel_dispatch::registration(
         svc,
         pool,
         sub_context_factory,
-        progress_tx,
+        process_manager,
+        agent_titles,
     ));
     tools
 }

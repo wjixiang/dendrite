@@ -1,7 +1,4 @@
 mod agent;
-pub mod agent_task {
-    pub use super::agent::*;
-}
 mod events;
 mod keys;
 mod paste;
@@ -9,12 +6,8 @@ mod paste;
 mod tests;
 
 pub use agent::spawn_agent_task;
-pub use events::{
-    agent_event_to_message, append_to_streaming_assistant, append_to_streaming_thinking,
-    finalize_streaming_history, handle_final_event,
-};
 pub use keys::handle_key_event;
-pub use paste::{PASTE_SUMMARY_LEN_THRESHOLD, PASTE_SUMMARY_LINE_THRESHOLD, summarize_paste};
+pub use paste::summarize_paste;
 
 use std::time::Duration;
 
@@ -22,7 +15,6 @@ use agentik_types::AgentEvent;
 use crossterm::event::Event;
 use ratatui::Terminal;
 
-use crate::chat::ChatMessage;
 use crate::state::{Action, App, Panel, SettingsPane};
 use crate::widgets::ui;
 
@@ -35,11 +27,9 @@ pub async fn run_app(
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let mut pending_refresh = false;
+        let old_version = app.message_version;
 
-        // Collect all pending events from the agent channel, then
-        // process them. Draining into a Vec first avoids a mutable
-        // borrow conflict: `rx` borrows `app.event_rx` while the
-        // helper functions need `&mut app` for the messages map.
+        // Collect all pending events from the agent channel.
         let agent_events: Vec<AgentEvent> = if let Some(rx) = &mut app.agent_event_rx {
             let mut events = Vec::new();
             while let Ok(event) = rx.try_recv() {
@@ -50,20 +40,21 @@ pub async fn run_app(
             Vec::new()
         };
 
+        let mut had_events = false;
+
         for event in agent_events {
             tracing::debug!("{:?}", &event);
+            had_events = true;
             match event {
                 AgentEvent::Done => {
-                    // Finalize any still-streaming messages
                     let kind = app.agent_kind;
                     let history = app.agent_messages_map.get_mut(&kind).unwrap();
-                    finalize_streaming_history(history);
-                    history.push(ChatMessage::Done);
+                    events::finalize_streaming_history(history);
+                    history.push(crate::chat::ChatMessage::Done);
                     app.agent_running = false;
                     app.agent_requesting = false;
                     app.agent_usage_tokens = None;
-                    // Refresh the tree one final time so the user sees
-                    // any knowledge entries created during this run.
+                    app.bump_message_version();
                     pending_refresh = true;
                 }
                 AgentEvent::Requesting => {
@@ -71,161 +62,97 @@ pub async fn run_app(
                 }
                 AgentEvent::TextDelta(token) => {
                     app.agent_requesting = false;
-                    append_to_streaming_assistant(app, &token);
+                    events::append_to_streaming_assistant(app, &token);
+                    app.bump_message_version();
                 }
                 AgentEvent::ThinkingDelta(token) => {
                     app.agent_requesting = false;
-                    append_to_streaming_thinking(app, &token);
+                    events::append_to_streaming_thinking(app, &token);
+                    app.bump_message_version();
                 }
                 AgentEvent::UsageUpdate { output_tokens, .. } => {
                     app.agent_usage_tokens = Some(output_tokens);
                 }
-                // Stream lifecycle events — absorbed silently.
                 AgentEvent::StreamStart { .. }
                 | AgentEvent::ContentBlockStart { .. }
                 | AgentEvent::ContentBlockStop { .. }
                 | AgentEvent::StreamDelta { .. } => {}
-                // Aggregated responses and tool events.
-                // ToolResult may have modified the knowledge tree
-                // (e.g. direct kms_create_knowledge), so refresh.
                 event @ AgentEvent::ToolResult { .. } => {
                     app.agent_requesting = false;
-                    handle_final_event(app, event);
+                    events::handle_final_event(app, event);
+                    app.bump_message_version();
                     pending_refresh = true;
                 }
-                // LlmResponse, Thinking, ToolCall, Error — no tree change.
+                AgentEvent::ToolCall { .. } => {
+                    // Tool is about to execute — keep the spinner spinning
+                    // so the user knows the agent is still working.
+                    app.agent_requesting = true;
+                    events::handle_final_event(app, event);
+                    app.bump_message_version();
+                }
                 event => {
                     app.agent_requesting = false;
-                    handle_final_event(app, event);
+                    events::handle_final_event(app, event);
+                    app.bump_message_version();
                 }
             }
         }
 
-        // TODO: 改进为后端维护多Agent进程池，以更好的支持多Agent
-        //
-        // Drain the parallel-dispatch side-channel. Each event
-        // updates the panel state machine; we mark `pending_refresh`
-        // whenever a sub-agent finishes or fails so the tree view
-        // grows incrementally as staging areas get populated.
-        //
-        // In addition to driving the panel, sub-agent LLM responses
-        // are also pushed into the **main chat history** so the user
-        // sees the actual work the sub-agents produced, the same way
-        // they see the orchestrator's `Assistant` text. Without this,
-        // the parallel panel's collapsed-by-default rows hide every
-        // sub-agent response and the user is left watching the
-        // orchestrator's tool-call marker for minutes with no
-        // feedback ("看不到Agent响应的任何内容"). The panel and the
-        // chat history are complementary, not exclusive: the panel
-        // shows the compact per-sub-agent tree, the chat history
-        // shows the full text inline.
-        if let Some(rx) = &mut app.parallel_progress_rx {
+        // Drain ProcessManager events into AgentPanelState.
+        let mut had_process_events = false;
+        if let Some(rx) = &mut app.process_event_rx {
             while let Ok(event) = rx.try_recv() {
-                use dendrite_tools::parallel_progress::ParallelProgress as P;
-                if app.parallel_panel.is_none() {
-                    // Lazy-init the panel on the first event. We use
-                    // `DispatchStarted` to learn the total; if we
-                    // somehow receive an event before DispatchStarted
-                    // (e.g. a StagingCreated with no preceding start)
-                    // we still init the panel with `total = 0` and let
-                    // the subsequent DispatchStarted correct it.
-                    let total = if let P::DispatchStarted { total } = &event {
-                        *total
-                    } else {
-                        0
-                    };
-                    app.parallel_panel =
-                        Some(crate::parallel_panel::ParallelPanelState::new(total));
-                }
-                if let Some(panel) = app.parallel_panel.as_mut() {
-                    panel.apply(&event);
-                }
-                // Sub-agent LLM text: surface in the main chat
-                // history. The agent is identified by `app.agent_kind`
-                // (Parallel at the time the user dispatched), which
-                // is the same bucket the orchestrator's events are
-                // going into, so the two streams interleave naturally.
-                //
-                // During streaming, `TextDelta` tokens are appended to
-                // the last `SubAgentResponse` with a matching title.
-                // When the aggregated `LlmResponse` arrives, it
-                // replaces the streaming text with the authoritative
-                // full response.
-                if let P::SubAgentEvent { title, event } = &event {
-                    match event {
-                        AgentEvent::TextDelta(token) => {
-                            let kind = app.agent_kind;
-                            if let Some(history) = app.agent_messages_map.get_mut(&kind) {
-                                let found = history.iter_mut().rev().find(|m| {
-                                    matches!(
-                                        m,
-                                        ChatMessage::SubAgentResponse {
-                                            title: t, ..
-                                        } if t == title
-                                    )
-                                });
-                                if let Some(ChatMessage::SubAgentResponse { text, .. }) = found {
-                                    text.push_str(token);
-                                } else {
-                                    history.push(ChatMessage::SubAgentResponse {
-                                        title: title.clone(),
-                                        text: token.clone(),
-                                    });
-                                }
-                            }
-                        }
-                        AgentEvent::LlmResponse(text) => {
-                            let kind = app.agent_kind;
-                            if let Some(history) = app.agent_messages_map.get_mut(&kind) {
-                                let found = history.iter_mut().rev().find(|m| {
-                                    matches!(
-                                        m,
-                                        ChatMessage::SubAgentResponse {
-                                            title: t, ..
-                                        } if t == title
-                                    )
-                                });
-                                if let Some(ChatMessage::SubAgentResponse { text, .. }) = found {
-                                    // Replace the streaming text with
-                                    // the authoritative full response.
-                                    *text = text.clone();
-                                } else if !text.is_empty() {
-                                    history.push(ChatMessage::SubAgentResponse {
-                                        title: title.clone(),
-                                        text: text.clone(),
-                                    });
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                had_process_events = true;
+                // Register new agents on first sight.
                 match &event {
-                    P::SubAgentCompleted { .. } | P::SubAgentFailed { .. } => {
-                        pending_refresh = true;
+                    agentik_core::process::ProcessEvent::StateChanged { agent_id, .. }
+                    | agentik_core::process::ProcessEvent::Agent { agent_id, .. } => {
+                        if !app.agent_panel.agents.iter().any(|e| e.agent_id == *agent_id) {
+                            // Look up the title from the shared map.
+                            let title = app
+                                .agent_titles
+                                .read()
+                                .ok()
+                                .and_then(|map| map.get(agent_id).cloned())
+                                .unwrap_or_else(|| format!("Agent {}", &agent_id.to_string()[..8]));
+                            app.agent_panel.add_agent(*agent_id, title);
+                        }
                     }
                     _ => {}
                 }
+                app.agent_panel.apply_process_event(&event);
+                // Trigger tree refresh when a sub-agent exits.
+                if let agentik_core::process::ProcessEvent::ProcessExited { .. } = &event {
+                    pending_refresh = true;
+                }
             }
         }
 
-        // Advance the spinner *before* rendering so the latest frame
-        // always carries the updated glyph.
+        // Advance the spinner before rendering.
         if app.agent_requesting {
             app.spinner_tick = (app.spinner_tick + 1) % 8;
+            app.needs_render = true;
         }
 
-        // Render FIRST so the Agent panel (and every other panel)
-        // always reflects the latest event state on every frame.
-        // Any pending tree refresh happens *after* the render, so a
-        // slow refresh_tree() never delays UI updates.
-        terminal.draw(|f| ui(f, app))?;
+        // Mark dirty if any events arrived or messages changed.
+        if had_events || had_process_events || app.message_version != old_version {
+            app.needs_render = true;
+        }
+
+        // Always tick the toast (advances auto-expire timer) even when
+        // not rendering, so toasts don't get stuck on screen.
+        app.toast.tick();
+
+        // Render ONLY when state has changed — avoids the expensive
+        // to_lines() + wrapped_line_count() pipeline on idle frames.
+        if app.needs_render {
+            // Render FIRST so every panel reflects the latest state.
+            terminal.draw(|f| ui(f, app))?;
+            app.needs_render = false;
+        }
 
         if pending_refresh {
-            // Debounce: if we refreshed within the last 200ms, defer
-            // to the next loop iteration. The next event will re-set
-            // `pending_refresh` and we'll check again.
-            const REFRESH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+            const REFRESH_DEBOUNCE: Duration = Duration::from_millis(200);
             let should_refresh = match app.last_tree_refresh_at {
                 Some(t) => t.elapsed() >= REFRESH_DEBOUNCE,
                 None => true,
@@ -237,10 +164,13 @@ pub async fn run_app(
         }
 
         if crossterm::event::poll(Duration::from_millis(100))? {
+            let mut had_input = false;
             loop {
                 let event = crossterm::event::read()?;
                 match event {
-                    Event::Key(key) => match handle_key_event(key, app) {
+                    Event::Key(key) => {
+                        had_input = true;
+                        match handle_key_event(key, app) {
                         Action::Quit => app.should_quit = true,
                         Action::TreeChanged => app.on_tree_select().await,
                         Action::SubmitAgent(input) => spawn_agent_task(app, input),
@@ -250,6 +180,7 @@ pub async fn run_app(
                         Action::SwitchAgent => {
                             let next = app.agent_kind.toggle();
                             app.agent_kind = next;
+                            app.bump_message_version();
                             app.toast
                                 .info(format!("Switched to {} agent", app.agent_kind.label()));
                         }
@@ -259,8 +190,7 @@ pub async fn run_app(
                                 app.settings_selected_provider =
                                     (app.settings_selected_provider as isize + delta)
                                         .clamp(0, max as isize)
-                                        as usize;
-                                // Reset model selection when switching providers.
+                                    as usize;
                                 app.settings_selected_model = 0;
                             }
                             SettingsPane::Model => {
@@ -271,7 +201,7 @@ pub async fn run_app(
                                     app.settings_selected_model =
                                         (app.settings_selected_model as isize + delta)
                                             .clamp(0, max as isize)
-                                            as usize;
+                                    as usize;
                                 }
                             }
                             SettingsPane::Pool => {
@@ -298,10 +228,6 @@ pub async fn run_app(
                             if let Some((provider_id, model_name)) = pair {
                                 let was_in = app.is_in_pool(&provider_id, &model_name);
                                 app.toggle_pool_entry(&provider_id, &model_name);
-                                // Persist eagerly — the user can quit the
-                                // TUI right after this toggle (without
-                                // pressing Enter on the modal) and the
-                                // change must still be on disk.
                                 save_settings(&app.provider_configs, &app.pool_entries);
                                 let label = app
                                     .providers
@@ -310,8 +236,7 @@ pub async fn run_app(
                                     .map(|p| p.display_name.clone())
                                     .unwrap_or_else(|| provider_id.clone());
                                 if was_in {
-                                    app.toast
-                                        .info(format!("Removed {} / {}", label, model_name));
+                                    app.toast.info(format!("Removed {} / {}", label, model_name));
                                 } else {
                                     app.toast.info(format!("Added {} / {}", label, model_name));
                                 }
@@ -333,18 +258,12 @@ pub async fn run_app(
                                     .find(|p| p.id == removed.provider_id)
                                     .map(|p| p.display_name.clone())
                                     .unwrap_or_else(|| removed.provider_id.clone());
-                                app.toast
-                                    .info(format!("Removed {} / {}", label, removed.model));
+                                app.toast.info(format!("Removed {} / {}", label, removed.model));
                             }
                         }
                         Action::SettingsConfirm => {
-                            // Pool entries and providers are persisted
-                            // eagerly on every individual mutation, so
-                            // Confirm's only remaining job is to push
-                            // the assembled pool into the live agents.
                             if app.pool_entries.is_empty() {
-                                app.toast
-                                    .warning("Pool is empty \u{2014} no changes applied");
+                                app.toast.warning("Pool is empty — no changes applied");
                             } else {
                                 let new_entries = app.pool_entries.clone();
                                 if let Some(pool) = crate::settings::build_pool_from_entries(
@@ -358,8 +277,7 @@ pub async fn run_app(
                                         new_entries.len()
                                     ));
                                 } else {
-                                    app.toast
-                                        .error("Failed to build model pool from selections");
+                                    app.toast.error("Failed to build model pool from selections");
                                 }
                             }
                             app.settings_modal_open = false;
@@ -368,8 +286,7 @@ pub async fn run_app(
                             if app.settings_pane == SettingsPane::Provider {
                                 app.new_provider_form = Some(crate::state::NewProviderForm::new());
                             } else {
-                                app.toast
-                                    .info("Switch to the Providers pane to add a new one");
+                                app.toast.info("Switch to the Providers pane to add a new one");
                             }
                         }
                         Action::SettingsDeleteProvider => {
@@ -380,10 +297,6 @@ pub async fn run_app(
                                     .map(|p| p.id.clone());
                                 if let Some(id) = id {
                                     if app.remove_custom_provider(&id) {
-                                        // `remove_custom_provider` also
-                                        // drops the provider's pool
-                                        // entries; persist immediately
-                                        // so the on-disk file is in sync.
                                         save_settings(&app.provider_configs, &app.pool_entries);
                                         let max = app.providers.len().saturating_sub(1);
                                         if app.settings_selected_provider > max {
@@ -414,8 +327,6 @@ pub async fn run_app(
                                     } else {
                                         form.type_idx = (form.type_idx + n - 1) % n;
                                     }
-                                    // Reset URL preset to the first non-custom
-                                    // option for the new provider type.
                                     form.url_preset_idx = form
                                         .presets()
                                         .iter()
@@ -424,7 +335,6 @@ pub async fn run_app(
                                     form.url_custom.clear();
                                     form.error = None;
                                 } else if form.active_field == 3 {
-                                    // Cycling the URL preset.
                                     let n = form.presets().len().max(1);
                                     if delta > 0 {
                                         form.url_preset_idx = (form.url_preset_idx + 1) % n;
@@ -449,15 +359,9 @@ pub async fn run_app(
                         Action::SettingsFormBackspace => {
                             if let Some(form) = app.new_provider_form.as_mut() {
                                 match form.active_field {
-                                    1 => {
-                                        form.display_name.pop();
-                                    }
-                                    2 => {
-                                        form.api_key.pop();
-                                    }
-                                    3 if form.url_is_custom() => {
-                                        form.url_custom.pop();
-                                    }
+                                    1 => { let _ = form.display_name.pop(); }
+                                    2 => { let _ = form.api_key.pop(); }
+                                    3 if form.url_is_custom() => { let _ = form.url_custom.pop(); }
                                     _ => {}
                                 }
                             }
@@ -468,7 +372,6 @@ pub async fn run_app(
                                 let display_name = form.display_name.trim().to_string();
                                 let api_key = form.api_key.trim().to_string();
                                 let base_url = form.resolved_url();
-
                                 if display_name.is_empty() {
                                     app.toast.warning("Display name cannot be empty");
                                     app.new_provider_form = Some(form);
@@ -485,15 +388,11 @@ pub async fn run_app(
                                         api_key,
                                         base_url,
                                     );
-                                    // New provider is durable immediately —
-                                    // if the user quits before reopening
-                                    // settings, it still has to come back.
                                     save_settings(&app.provider_configs, &app.pool_entries);
                                     app.toast.success(format!(
                                         "Added custom provider: {} ({})",
                                         display_name, ptype
                                     ));
-                                    // Select the newly added provider.
                                     if let Some(pos) =
                                         app.providers.iter().position(|p| p.id == new_id)
                                     {
@@ -506,13 +405,10 @@ pub async fn run_app(
                             app.new_provider_form = None;
                         }
                         Action::None => {}
-                    },
+                        }
+                    }
                     Event::Paste(s) if app.new_provider_form.is_some() => {
-                        // Paste inside the new-provider form: drop the
-                        // full text into the active field. We do not
-                        // summarize here — API keys and URLs are
-                        // single-line by nature, so a paste shouldn't
-                        // turn into a `[Pasted ~N lines]` placeholder.
+                        had_input = true;
                         if let Some(form) = app.new_provider_form.as_mut() {
                             form.error = None;
                             match form.active_field {
@@ -528,11 +424,8 @@ pub async fn run_app(
                             && app.agent_input_active
                             && !app.agent_running =>
                     {
+                        had_input = true;
                         if let Some(placeholder) = summarize_paste(&s) {
-                            // Long paste: store full text in a side-channel
-                            // and push a compact placeholder into the input
-                            // field. The placeholder is substituted back to
-                            // the full text at submission time.
                             app.agent_pastes.push((placeholder.clone(), s));
                             app.agent_input.push_str(&placeholder);
                         } else {
@@ -544,6 +437,9 @@ pub async fn run_app(
                 if !crossterm::event::poll(Duration::from_secs(0))? {
                     break;
                 }
+            }
+            if had_input {
+                app.needs_render = true;
             }
         }
 

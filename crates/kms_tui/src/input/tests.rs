@@ -105,25 +105,3 @@ fn default_focus_is_messages() {
     use crate::state::ChatFocus;
     assert_eq!(ChatFocus::default(), ChatFocus::Messages);
 }
-
-#[test]
-fn focus_cycles_messages_to_panel() {
-    use crate::state::ChatFocus;
-    let f = ChatFocus::Messages;
-    let next = match f {
-        ChatFocus::Messages => ChatFocus::ParallelPanel,
-        ChatFocus::ParallelPanel => ChatFocus::Messages,
-    };
-    assert_eq!(next, ChatFocus::ParallelPanel);
-}
-
-#[test]
-fn focus_cycles_panel_to_messages() {
-    use crate::state::ChatFocus;
-    let f = ChatFocus::ParallelPanel;
-    let next = match f {
-        ChatFocus::Messages => ChatFocus::ParallelPanel,
-        ChatFocus::ParallelPanel => ChatFocus::Messages,
-    };
-    assert_eq!(next, ChatFocus::Messages);
-}

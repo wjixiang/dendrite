@@ -5,13 +5,14 @@
 //! orchestrator can react to structural issues in the main tree
 //! before deciding how to split a task.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use agentik_core::context::{AgentContext, ContextDiagnostic, ContextSnapshot};
 use agentik_sdk::model::model_pool::ModelPool;
 use async_trait::async_trait;
-use dendrite_tools::parallel_progress::ParallelProgressTx;
 use dendrite_tools::ToolRegistration;
+use uuid::Uuid;
 
 use crate::diagnostics::convert_diagnostics;
 use crate::parallel_prompt::PARALLEL_COMPOSE_PROMPT;
@@ -20,19 +21,22 @@ use crate::subtree_context::SubTreeComposeContext;
 pub struct ParallelComposeContext {
     kms: Arc<kms::KmsService>,
     pool: Arc<ModelPool>,
-    progress_tx: ParallelProgressTx,
+    process_manager: Arc<agentik_core::process::ProcessManager>,
+    agent_titles: Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
 }
 
 impl ParallelComposeContext {
     pub fn new(
         kms: Arc<kms::KmsService>,
         pool: Arc<ModelPool>,
-        progress_tx: ParallelProgressTx,
+        process_manager: Arc<agentik_core::process::ProcessManager>,
+        agent_titles: Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
     ) -> Self {
         Self {
             kms,
             pool,
-            progress_tx,
+            process_manager,
+            agent_titles,
         }
     }
 }
@@ -99,7 +103,8 @@ impl AgentContext for ParallelComposeContext {
             self.kms.clone(),
             self.pool.clone(),
             sub_factory,
-            self.progress_tx.clone(),
+            self.process_manager.clone(),
+            self.agent_titles.clone(),
         )
     }
 }

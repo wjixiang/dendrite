@@ -6,7 +6,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::chat::ChatMessage;
 use crate::state::{App, Panel};
 use crate::theme::Theme;
 
@@ -57,38 +56,37 @@ const VIEWPORT_MSG_BUFFER: usize = 3;
 const RENDER_ALL_THRESHOLD: usize = 50;
 
 /// Find the range of message indices `[start, end)` that should be
-/// rendered given the current scroll position. Uses
-/// `ChatMessage::estimate_lines()` as a cheap proxy for visual
-/// height to walk messages until the cumulative estimate exceeds
-/// `scroll_y`.
+/// rendered given the current scroll position. Uses pre-computed
+/// `estimate_lines()` counts (from the estimate cache) to walk
+/// messages until the cumulative estimate exceeds `scroll_y`.
 ///
 /// When the total message count is small (below `RENDER_ALL_THRESHOLD`),
-/// returns `(0, len)` — no culling, identical to the old behavior.
+/// returns `(0, total)` — no culling, identical to the old behavior.
 fn visible_message_range(
-    messages: &[ChatMessage],
+    estimates: &[usize],
     scroll_y: usize,
+    total: usize,
 ) -> (usize, usize) {
-    let len = messages.len();
-    if len <= RENDER_ALL_THRESHOLD {
-        return (0, len);
+    if total <= RENDER_ALL_THRESHOLD {
+        return (0, total);
     }
 
     let mut cumulative: usize = 0;
     let mut start: usize = 0;
-    for (i, msg) in messages.iter().enumerate() {
+    for (i, &est) in estimates.iter().enumerate() {
         if cumulative >= scroll_y {
             start = i.saturating_sub(VIEWPORT_MSG_BUFFER);
             break;
         }
-        cumulative += msg.estimate_lines();
+        cumulative += est;
         // If we exhausted all messages without reaching scroll_y,
         // the scroll is pinned to the bottom. Show the tail.
-        if i + 1 == len {
-            start = len.saturating_sub(RENDER_ALL_THRESHOLD);
+        if i + 1 == total {
+            start = total.saturating_sub(RENDER_ALL_THRESHOLD);
         }
     }
 
-    let end = (start + RENDER_ALL_THRESHOLD).min(len);
+    let end = (start + RENDER_ALL_THRESHOLD).min(total);
     (start, end)
 }
 
@@ -122,10 +120,10 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         )
     };
 
-    let (rendered_lines, skipped_rows): (Vec<Line<'static>>, usize) =
+    let rendered_lines: Vec<Line<'static>> =
         if app.providers.is_empty() {
         // Empty-pool first-run hint instead of the normal chat history.
-        (vec![
+        vec![
             Line::from(Span::styled(
                 "  No LLM providers configured.",
                 Style::default()
@@ -176,38 +174,62 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 "  with different API keys) are supported to fan out TPM.",
                 Style::default().fg(theme.text_muted),
             )),
-        ], 0)
+        ]
     } else {
-        let panel_state = app.parallel_panel.as_ref();
-        let to_lines_width = area.width.saturating_sub(4) as usize;
-        let messages = app.agent_messages();
-
-        // --- Viewport culling: two-phase rendering ---
-        //
-        // Phase A: cheap pre-scan with estimate_lines() to find the
-        // visible message range and compute scroll bounds.
+        let msg_version = app.message_version;
+        let msg_len = {
+            let msgs = app.agent_messages();
+            msgs.len()
+        };
         let inner_height = chunks[0].height.saturating_sub(2) as usize;
-        let est_total: usize = messages.iter().map(|m| m.estimate_lines()).sum();
-        let max_scroll = est_total.saturating_sub(inner_height);
-        let scroll_y: usize = if app.agent_auto_scroll {
-            max_scroll
+
+        // --- Phase A: compute visible range, using cached estimates ---
+        let (start, end) = if msg_len > RENDER_ALL_THRESHOLD {
+            // Check if cached estimates are still valid.
+            let estimates_valid = matches!(
+                &app.cached_estimates,
+                Some((ver, ests)) if *ver == msg_version && ests.len() == msg_len
+            );
+
+            if !estimates_valid {
+                let msgs = app.agent_messages();
+                let ests: Vec<usize> = msgs.iter().map(|m| m.estimate_lines()).collect();
+                app.cached_estimates = Some((msg_version, ests));
+            }
+
+            let ests = app.cached_estimates.as_ref().unwrap().1.as_slice();
+            let est_total: usize = ests.iter().sum();
+            let est_max = est_total.saturating_sub(inner_height);
+            let rough_scroll = (app.agent_scroll as usize).min(est_max);
+            visible_message_range(ests, rough_scroll, msg_len)
         } else {
-            (app.agent_scroll as usize).min(max_scroll)
+            app.cached_estimates = None;
+            if app.agent_auto_scroll {
+                let tail_start = msg_len.saturating_sub(RENDER_ALL_THRESHOLD);
+                (tail_start, msg_len)
+            } else {
+                (0, msg_len)
+            }
         };
 
-        let (start, end) = visible_message_range(messages, scroll_y);
-        let skipped_rows: usize = messages[..start]
-            .iter()
-            .map(|m| m.estimate_lines())
-            .sum();
+        // --- Phase B: render visible messages, using cached lines ---
+        let cache_hit = matches!(
+            &app.cached_agent_lines,
+            Some((ver, s, e, _lines)) if *ver == msg_version && *s == start && *e == end
+        );
 
-        // Phase B: expensive to_lines() only on the visible slice.
-        let lines: Vec<Line<'static>> = messages[start..end]
-            .iter()
-            .flat_map(|msg| msg.to_lines(theme, panel_state, to_lines_width))
-            .collect();
-
-        (lines, skipped_rows)
+        if cache_hit {
+            // Cache hit — clone is much cheaper than re-running to_lines().
+            app.cached_agent_lines.as_ref().unwrap().3.clone()
+        } else {
+            let msgs = app.agent_messages();
+            let lines: Vec<Line<'static>> = msgs[start..end]
+                .iter()
+                .flat_map(|msg| msg.to_lines(theme))
+                .collect();
+            app.cached_agent_lines = Some((msg_version, start, end, lines.clone()));
+            lines
+        }
     };
 
     let conv_block = Block::default()
@@ -215,23 +237,23 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         .borders(Borders::ALL)
         .border_style(theme.focused_border_style(app.focused == Panel::Agent));
 
-    // The Paragraph's scroll offset must be relative to the rendered
-    // slice (which starts at message `start`, not message 0). We
-    // subtract the estimated rows occupied by skipped messages.
-    //
-    // `estimate_lines()` counts `Line` objects, not post-wrap visual
-    // rows, so `skipped_rows` is an *under*-estimate of the actual
-    // visual rows skipped. This means `paragraph_scroll` may be
-    // slightly *over*-estimated — a few extra lines at the top are
-    // shown, clipped by the viewport. The safe direction.
+    // Scroll computation uses wrapped_line_count on the RENDERED
+    // lines — same as the original code.  This gives the correct
+    // post-wrap visual row count that Paragraph expects.
+    let inner_height = chunks[0].height.saturating_sub(2) as usize;
     let inner_width = chunks[0].width.saturating_sub(2) as usize;
     let rendered_max = wrapped_line_count(&rendered_lines, inner_width);
-    let paragraph_scroll = (skipped_rows as usize).min(rendered_max) as u16;
+    let max_scroll = rendered_max.saturating_sub(inner_height);
+    let scroll_y = if app.agent_auto_scroll {
+        max_scroll as u16
+    } else {
+        app.agent_scroll.min(max_scroll as u16)
+    };
 
     let conv = Paragraph::new(rendered_lines)
         .block(conv_block)
         .wrap(Wrap { trim: false })
-        .scroll((paragraph_scroll, 0));
+        .scroll((scroll_y, 0));
     f.render_widget(conv, chunks[0]);
 
     let status_line = if app.providers.is_empty() {
@@ -339,34 +361,36 @@ mod wrap_tests {
 
     #[test]
     fn short_history_renders_all() {
-        let messages: Vec<ChatMessage> = (0..30).map(|_| ChatMessage::Divider).collect();
-        let (start, end) = visible_message_range(&messages, 0);
+        let estimates = vec![1usize; 30];
+        let (start, end) = visible_message_range(&estimates, 0, 30);
         assert_eq!(start, 0);
         assert_eq!(end, 30);
     }
 
     #[test]
     fn long_history_at_top_renders_first_batch() {
-        let messages: Vec<ChatMessage> = (0..200).map(|_| ChatMessage::Divider).collect();
-        let (start, end) = visible_message_range(&messages, 0);
+        let estimates = vec![1usize; 200];
+        let (start, end) = visible_message_range(&estimates, 0, 200);
         assert_eq!(start, 0);
         assert_eq!(end, RENDER_ALL_THRESHOLD);
     }
 
     #[test]
     fn long_history_at_bottom_includes_last_messages() {
-        let messages: Vec<ChatMessage> = (0..200).map(|_| ChatMessage::Divider).collect();
-        let est_total: usize = messages.iter().map(|m| m.estimate_lines()).sum();
+        let n = 200;
+        let estimates = vec![1usize; n];
+        let est_total: usize = estimates.iter().sum();
         let max_scroll = est_total.saturating_sub(24);
-        let (_start, end) = visible_message_range(&messages, max_scroll);
+        let (_start, end) = visible_message_range(&estimates, max_scroll, n);
         assert_eq!(end, 200); // always includes the last message
     }
 
     #[test]
     fn visible_range_never_exceeds_threshold() {
-        let messages: Vec<ChatMessage> = (0..500).map(|_| ChatMessage::Divider).collect();
+        let n = 500;
+        let estimates = vec![1usize; n];
         for scroll in [0, 100, 250, 499] {
-            let (start, end) = visible_message_range(&messages, scroll);
+            let (start, end) = visible_message_range(&estimates, scroll, n);
             assert!(
                 end - start <= RENDER_ALL_THRESHOLD,
                 "scroll={scroll}: range [{start},{end}) exceeds threshold",
@@ -376,23 +400,24 @@ mod wrap_tests {
 
     #[test]
     fn empty_history_returns_empty_range() {
-        let messages: Vec<ChatMessage> = vec![];
-        let (start, end) = visible_message_range(&messages, 0);
+        let estimates: Vec<usize> = vec![];
+        let (start, end) = visible_message_range(&estimates, 0, 0);
         assert_eq!(start, 0);
         assert_eq!(end, 0);
     }
 
     #[test]
     fn threshold_boundary_exact() {
-        let messages: Vec<ChatMessage> = (0..RENDER_ALL_THRESHOLD).map(|_| ChatMessage::Divider).collect();
-        let (_start, end) = visible_message_range(&messages, 0);
+        let estimates = vec![1usize; RENDER_ALL_THRESHOLD];
+        let (_start, end) = visible_message_range(&estimates, 0, RENDER_ALL_THRESHOLD);
         assert_eq!(end, RENDER_ALL_THRESHOLD);
     }
 
     #[test]
     fn one_over_threshold_triggers_culling() {
-        let messages: Vec<ChatMessage> = (0..RENDER_ALL_THRESHOLD + 1).map(|_| ChatMessage::Divider).collect();
-        let (start, end) = visible_message_range(&messages, 0);
+        let n = RENDER_ALL_THRESHOLD + 1;
+        let estimates = vec![1usize; n];
+        let (start, end) = visible_message_range(&estimates, 0, n);
         assert_eq!(start, 0);
         assert_eq!(end, RENDER_ALL_THRESHOLD);
     }

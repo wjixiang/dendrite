@@ -2,7 +2,8 @@ use ratatui::Frame;
 
 use crate::components;
 use crate::layout;
-use crate::state::App;
+use crate::state::{App, Panel};
+use crate::agent_panel;
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let app_layout = layout::compute(f.area());
@@ -24,6 +25,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         app_layout.help_area,
     );
 
+    // Render the Agents panel when it's focused, using the diag area.
+    if app.focused == Panel::Agents {
+        agent_panel::render_agent_panel(f, &app.agent_panel, &theme, app_layout.diag_area);
+    }
+
     if app.settings_modal_open {
         components::render_settings_modal(f, app, &theme);
         if app.new_provider_form.is_some() {
@@ -31,6 +37,5 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         }
     }
 
-    app.toast.tick();
     app.toast.render(f, &theme);
 }

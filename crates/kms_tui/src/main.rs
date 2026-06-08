@@ -1,8 +1,8 @@
+mod agent_panel;
 mod chat;
 mod components;
 mod input;
 mod layout;
-mod parallel_panel;
 mod settings;
 mod state;
 mod styles;
@@ -39,9 +39,6 @@ fn init_logging() {
     if let Some(parent) = log_path.parent() {
         let _ = create_dir_all(parent);
     }
-    // Append mode so a previous run's logs survive a restart — invaluable
-    // for "the app crashed last time, where?" postmortem. The file is
-    // created on first run.
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -54,17 +51,9 @@ fn init_logging() {
                 .add_directive(tracing::Level::DEBUG.into()),
         )
         .init();
-    // First entry, so the user can `grep tui.log | head` and immediately
-    // see where the log went on this run.
     tracing::info!("logging to {:?}", log_path);
 }
 
-/// Resolve the log file path. `KMS_LOG_PATH` wins, then the XDG data
-/// directory (`$XDG_DATA_HOME/kms/tui.log` or
-/// `$HOME/.local/share/kms/tui.log`). Falls back to the legacy
-/// CWD-relative `data/tui.log` only when neither is available, so the
-/// TUI never crashes on startup just because $HOME is unset (e.g.
-/// inside an unprivileged systemd unit).
 fn log_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("KMS_LOG_PATH") {
         return std::path::PathBuf::from(p);
@@ -88,21 +77,12 @@ fn log_path() -> std::path::PathBuf {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    // Note: we deliberately do NOT load .env files and do NOT read
-    // MIMO_API_KEY / MINIMAX_* / SENSENOVA_* from the environment. All
-    // provider configuration lives in `data/settings.json` and is
-    // managed through the in-TUI settings form.
     let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
     let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
 
-    // Load all providers from settings.json. No env-var discovery.
     let raw_settings = load_settings();
     let provider_configs: Vec<ProviderConfig> = raw_settings.providers;
 
-    // Refresh each provider's model list from the SDK (e.g. minimax
-    // exposes `/v1/models`). The fresh list is what the in-memory
-    // SettingsProvider carries; on-disk config keeps the credentials
-    // but the model list is treated as ephemeral.
     let mut providers: Vec<SettingsProvider> = Vec::with_capacity(provider_configs.len());
     for cp in &provider_configs {
         let models = crate::settings::refresh_models(cp).await;
@@ -117,8 +97,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Validate persisted pool entries against the live provider list.
-    // If a provider or model disappeared, drop the stale entry.
     let pool_entries = raw_settings
         .pool
         .into_iter()
@@ -129,13 +107,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect::<Vec<_>>();
 
+    // Singleton ProcessManager — owned by the TUI, shared via Arc to
+    // the tool layer so parallel dispatch can spawn sub-agents.
+    let process_manager = Arc::new(agentik_core::process::ProcessManager::new());
+
+    // Shared title map: agent_id → human-readable title. Written by
+    // the dispatch tool after spawn(), read by the TUI panel.
+    let agent_titles = Arc::new(std::sync::RwLock::new(HashMap::new()));
+
     // Build agents only when we have at least one working model.
-    // Otherwise the TUI starts in "needs configuration" mode.
     let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>> =
         HashMap::new();
-    let (parallel_progress_tx, parallel_progress_rx) =
-        tokio::sync::mpsc::unbounded_channel::<dendrite_tools::parallel_progress::ParallelProgress>(
-        );
 
     if !providers.is_empty()
         && !pool_entries.is_empty()
@@ -162,7 +144,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_context(Arc::new(ParallelComposeContext::new(
                 Arc::new(svc.clone()),
                 pool_arc.clone(),
-                parallel_progress_tx.clone(),
+                process_manager.clone(),
+                agent_titles.clone(),
             )))
             .build()
             .await
@@ -190,8 +173,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         providers,
         provider_configs,
         pool_entries.clone(),
-        parallel_progress_tx,
-        parallel_progress_rx,
+        process_manager,
+        agent_titles,
     );
 
     save_settings(&app.provider_configs, &app.pool_entries);
