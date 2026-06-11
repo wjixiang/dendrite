@@ -5,7 +5,7 @@ edition = "2024"
 description = "Knowledge construction expert agent context."
 
 [dependencies]
-agentik = { workspace = true }
+agentik = { path = "../agentik" }
 
 # Domain-specific tools (KMS). These are external to agentik-core.
 dendrite-tools = { path = "../dendrite-tools" }

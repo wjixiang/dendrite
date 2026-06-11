@@ -8,7 +8,7 @@ description = "External (domain-specific) tools for the agentik-core runtime. Bu
 kms = { path = "../kms" }
 corpus = { path = "../corpus" }
 
-agentik = { workspace = true }
+agentik = { path = "../agentik" }
 
 async-trait = { workspace = true }
 futures = "0.3"

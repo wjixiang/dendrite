@@ -1,0 +1,32 @@
+[package]
+name = "agentik-core"
+version = "0.1.0"
+edition.workspace = true
+description = "Domain-agnostic agent runtime. Plug in any AgentContext to specialize."
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+] }
+uuid = { workspace = true }
+agentik-sdk = { path = "../agentik-sdk" }
+agentik-types = { path = "../agentik-types" }
+
+async-trait = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+regex = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+dotenvy = { workspace = true }
+tracing-subscriber = { workspace = true }

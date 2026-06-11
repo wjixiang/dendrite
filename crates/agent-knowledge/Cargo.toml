@@ -5,7 +5,7 @@ edition = "2024"
 description = "Read-only knowledge retrieval agent context."
 
 [dependencies]
-agentik = { workspace = true }
+agentik = { path = "../agentik" }
 
 dendrite-tools = { path = "../dendrite-tools" }
 kms = { path = "../kms" }

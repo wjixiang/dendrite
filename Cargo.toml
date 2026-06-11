@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/agentik",
+  "crates/agentik-core",
+  "crates/agentik-sdk",
+  "crates/agentik-types",
   "crates/corpus",
   "crates/dendrite-tools",
   "crates/agent-compose",
@@ -9,15 +13,12 @@ members = [
   "crates/kms_tui",
 ]
 
-[workspace.dependencies]
-# Single umbrella dependency for the agentik ecosystem. The upstream
-# monorepo at github.com/wjixiang/agentik publishes one crate `agentik`
-# that wholesale re-exports agentik-core, agentik-sdk, and agentik-types
-# under `agentik::core`, `agentik::sdk`, `agentik::types`. All dendrite
-# code goes through this single dependency so Cargo can never split the
-# ecosystem across multiple sources.
-agentik = { git = "https://github.com/wjixiang/agentik.git" }
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
 
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
@@ -28,3 +29,21 @@ reqwest = { version = "0.13.4", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.12", features = ["v4"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+regex = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
+url = "2.5"
+bytes = "1.5"
+mime = "0.3.17"
+tokio-stream = { version = "0.1", features = ["sync"] }
+eventsource-stream = "0.2"
+pin-project = "1.0"
+tempfile = "3.0"
+sha2 = "0.11"
+base64 = "0.22"
+backoff = "0.4"
+tower = "0.5"
+once_cell = "1.0"
+mockall = "0.14"
