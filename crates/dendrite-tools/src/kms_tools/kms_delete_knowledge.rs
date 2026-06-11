@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_delete_knowledge",
         "Delete a knowledge entry. Indexes referencing this knowledge are downgraded to empty Group nodes (may trigger empty_leaf diagnostics).",
@@ -12,9 +12,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegi
     .required("title")
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let title = input["title"].as_str().ok_or("missing 'title'")?;

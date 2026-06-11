@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 
 /// Stateless alternative to `kms_navigate`. Returns a structured
 /// `LocalView` for any node in the index tree without mutating the
@@ -12,7 +12,7 @@ use agentik::types::tools::{ToolBuilder, ToolResult};
 ///   - `..` — not allowed (no current-pointer context; use an
 ///     absolute path instead)
 ///   - single segment or `/`-separated segments — supported
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_view_local",
         "Stateless: fetch a structured local view of any node in the index tree. \
@@ -34,9 +34,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegi
     )
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let path = input["path"]

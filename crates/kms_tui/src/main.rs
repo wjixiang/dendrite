@@ -16,7 +16,7 @@ use std::sync::Arc;
 use agent_compose::KmsContext;
 use agent_compose::ParallelComposeContext;
 use agent_knowledge::KnowledgeContext;
-use agentik::sdk::model::model_pool::ModelPool;
+use agentik_sdk::model::model_pool::ModelPool;
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
@@ -187,14 +187,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Singleton ProcessManager — owned by the TUI, shared via Arc to
     // the tool layer so parallel dispatch can spawn sub-agents.
-    let process_manager = Arc::new(agentik::core::process::ProcessManager::new());
+    let process_manager = Arc::new(agentik_core::process::ProcessManager::new());
 
     // Shared title map: agent_id → human-readable title. Written by
     // the dispatch tool after spawn(), read by the TUI panel.
     let agent_titles = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
     // Build agents only when we have at least one working model.
-    let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik::core::Agent>>> =
+    let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>> =
         HashMap::new();
 
     if !providers.is_empty()
@@ -207,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let compose_ctx = Arc::new(KmsContext::new(Arc::new(svc.clone()), corpus.clone()));
         compose_ctx.initialize().await.map_err(|e| e.to_string())?;
 
-        let compose_agent = agentik::core::Agent::builder()
+        let compose_agent = agentik_core::Agent::builder()
             .with_model_pool(pool_arc.clone())
             .with_context(compose_ctx.clone())
             .with_system_prompt_section(agent_compose::KMS_SYSTEM_PROMPT)
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| e.to_string())?;
 
-        let knowledge_agent = agentik::core::Agent::builder()
+        let knowledge_agent = agentik_core::Agent::builder()
             .with_model_pool(pool_arc.clone())
             .with_context(knowledge_ctx)
             .with_system_prompt_section(agent_knowledge::KNOWLEDGE_RETRIEVAL_PROMPT)
@@ -264,7 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        let parallel_agent = agentik::core::Agent::builder()
+        let parallel_agent = agentik_core::Agent::builder()
             .with_model_pool(pool_arc.clone())
             .with_context(parallel_ctx.clone())
             .with_system_prompt_section(agent_compose::PARALLEL_COMPOSE_PROMPT)

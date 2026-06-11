@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use agent_compose::{KmsContext, ParallelComposeContext};
 use agent_knowledge::KnowledgeContext;
-use agentik::types::AgentEvent;
-use agentik::types::messages::ContentBlock;
+use agentik_sdk::types::AgentEvent;
+use agentik_sdk::types::messages::ContentBlock;
 
 use crate::chat::ChatMessage;
 use crate::state::{AgentKind, App};
@@ -13,7 +13,7 @@ use super::paste;
 /// Rebuild all three agents with the given model pool and service reference.
 pub async fn rebuild_all_agents(
     app: &mut App,
-    pool: &Arc<agentik::sdk::model::model_pool::ModelPool>,
+    pool: &Arc<agentik_sdk::model::model_pool::ModelPool>,
 ) {
     let svc = app.svc.clone();
     let svc_arc = Arc::new(svc);
@@ -24,7 +24,7 @@ pub async fn rebuild_all_agents(
     // erasing to the trait object.
     let compose_ctx_arc = Arc::new(KmsContext::new(svc_arc.clone(), corpus_arc.clone()));
     let _ = compose_ctx_arc.initialize().await;
-    let compose_ctx: Arc<dyn agentik::core::context::AgentContext> = compose_ctx_arc;
+    let compose_ctx: Arc<dyn agentik_core::context::AgentContext> = compose_ctx_arc;
     let compose_tools = dendrite_tools::registrations(
         svc_arc.clone(),
         corpus_arc.clone(),
@@ -34,19 +34,19 @@ pub async fn rebuild_all_agents(
     // Knowledge agent
     let knowledge_ctx_arc = Arc::new(KnowledgeContext::new(svc_arc.clone()));
     let _ = knowledge_ctx_arc.initialize().await;
-    let knowledge_ctx: Arc<dyn agentik::core::context::AgentContext> = knowledge_ctx_arc;
+    let knowledge_ctx: Arc<dyn agentik_core::context::AgentContext> = knowledge_ctx_arc;
     let knowledge_tools =
         dendrite_tools::readonly_registrations(svc_arc.clone(), corpus_arc.clone());
 
     // Parallel agent — stateless, initialized once with root local_view.
     let parallel_ctx_arc = Arc::new(ParallelComposeContext::new(svc_arc.clone()));
     let _ = parallel_ctx_arc.initialize().await;
-    let parallel_ctx: Arc<dyn agentik::core::context::AgentContext> = parallel_ctx_arc;
+    let parallel_ctx: Arc<dyn agentik_core::context::AgentContext> = parallel_ctx_arc;
 
     let sub_factory: Arc<
         dyn Fn(
                 Arc<kms::KmsService>,
-                Arc<agentik::sdk::model::model_pool::ModelPool>,
+                Arc<agentik_sdk::model::model_pool::ModelPool>,
                 String,
             ) -> dendrite_tools::SubAgentConfig
             + Send
@@ -99,7 +99,7 @@ pub async fn rebuild_all_agents(
             agent_compose::PARALLEL_COMPOSE_PROMPT,
         ),
     ] {
-        match agentik::core::Agent::builder()
+        match agentik_core::Agent::builder()
             .with_model_pool(pool.clone())
             .with_context(ctx)
             .with_system_prompt_section(prompt)

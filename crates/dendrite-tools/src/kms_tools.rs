@@ -1,15 +1,15 @@
 //! KMS + corpus tool implementations, one module per tool.
 //!
-//! Each submodule defines a single [`agentik::core::tools::ToolRegistration`]
+//! Each submodule defines a single [`agentik_core::tools::ToolRegistration`]
 //! via its `registration(svc)` (or `registration(svc, corpus)`) function.
 //! This module aggregates them into the flat list consumed by the agent
 //! runtime.
 
 use std::sync::Arc;
 
-use agentik::core::context::{AgentContext, ContextChanges};
-use agentik::core::tools::{ToolFunction, ToolRegistration};
-use agentik::sdk::model::model_pool::ModelPool;
+use agentik_core::context::{AgentContext, ContextChanges};
+use agentik_core::tools::{ToolFunction, ToolRegistration};
+use agentik_sdk::model::model_pool::ModelPool;
 use serde_json::Value;
 
 /// Tools that start with the `kms_` prefix but are read-only.
@@ -59,7 +59,7 @@ impl ToolFunction for MutationRefreshTool {
     async fn execute(
         &self,
         input: Value,
-    ) -> Result<agentik::core::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<agentik_core::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let result = self.inner.execute(input).await?;
         // Trigger context refresh.  Fire-and-forget errors — a context
         // refresh failure must not break the tool execution result.
@@ -71,7 +71,7 @@ impl ToolFunction for MutationRefreshTool {
         self.inner.timeout_seconds()
     }
 
-    fn definition(&self) -> agentik::types::Tool {
+    fn definition(&self) -> agentik_sdk::types::Tool {
         self.inner.definition()
     }
 }
@@ -85,7 +85,7 @@ impl ToolFunction for NoopTool {
     async fn execute(
         &self,
         _input: Value,
-    ) -> Result<agentik::core::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<agentik_core::tools::ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         unreachable!("NoopTool should never be executed")
     }
 }
@@ -251,7 +251,7 @@ pub fn parallel_registrations(
     sub_context_factory: Arc<
         dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> SubAgentConfig + Send + Sync,
     >,
-    process_manager: Arc<agentik::core::process::ProcessManager>,
+    process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<std::collections::HashMap<uuid::Uuid, String>>>,
 ) -> Vec<ToolRegistration> {
     let mut tools = raw_registrations(svc.clone(), corpus.clone());

@@ -378,6 +378,7 @@ impl Agent {
             .request_stream(context, self.toolset.tools().as_ref())
             .await?;
 
+        tracing::info!("request: starting stream iteration");
         while let Some(event) = stream.next().await {
             let stream_event = match event {
                 Ok(e) => e,
@@ -403,6 +404,7 @@ impl Agent {
                 self.send_event(agent_event);
             }
         }
+        tracing::info!("request: stream iteration ended, awaiting final_message()");
         // NB: do NOT emit `AgentEvent::Done` here. `Done` is a
         // lifecycle signal that the TUI uses to flip its `agent_running`
         // flag and re-enable the input field. Emitting it after every

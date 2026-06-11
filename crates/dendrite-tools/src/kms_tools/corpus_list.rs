@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "corpus_list",
         "List all documents in the corpus. Returns metadata (id, title, \
@@ -12,9 +12,9 @@ pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::To
     )
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |_input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |_input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let docs = svc.list_documents().await?;

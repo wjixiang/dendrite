@@ -1,8 +1,8 @@
 use std::fs;
 
-use agentik::sdk::model::model_pool::ModelPool;
-use agentik::sdk::provider::LlmProvider;
-use agentik::sdk::provider::mimo::{MimoEndpoint, TokenPlanRegion};
+use agentik_sdk::model::model_pool::ModelPool;
+use agentik_sdk::provider::LlmProvider;
+use agentik_sdk::provider::mimo::{MimoEndpoint, TokenPlanRegion};
 
 use crate::state::SettingsProvider;
 
@@ -142,26 +142,26 @@ fn get_model_for_provider_with_creds(
     base_url: &str,
     model_list: &[String],
     model: &str,
-) -> Option<agentik::sdk::model::Model> {
+) -> Option<agentik_sdk::model::Model> {
     match provider_type {
         "mimo" => {
-            let p = agentik::sdk::provider::mimo::MimoProvider::new(
+            let p = agentik_sdk::provider::mimo::MimoProvider::new(
                 mimo_endpoint_from_url(base_url),
                 api_key.to_string(),
             );
             p.get_model(model).ok()
         }
         "minimax" => {
-            let mut p = agentik::sdk::provider::minimax::MinimaxProvider::new(
+            let mut p = agentik_sdk::provider::minimax::MinimaxProvider::new(
                 base_url.to_string(),
                 api_key.to_string(),
             );
             // Register the user-chosen model list so `get_model` can
             // resolve names that aren't part of the SDK's preset set.
             if !model_list.is_empty() {
-                let infos: Vec<agentik::sdk::model::ModelInfo> = model_list
+                let infos: Vec<agentik_sdk::model::ModelInfo> = model_list
                     .iter()
-                    .map(|m| agentik::sdk::model::ModelInfo {
+                    .map(|m| agentik_sdk::model::ModelInfo {
                         model_name: m.clone(),
                         provider: "minimax".to_string(),
                         ..Default::default()
@@ -176,7 +176,7 @@ fn get_model_for_provider_with_creds(
             // https://token.sensenova.cn. Pass `None` when the user
             // left the field blank so we don't accidentally pin a
             // stale or mistyped value.
-            let mut p = agentik::sdk::provider::sensenova::SensenovaProvider::new(
+            let mut p = agentik_sdk::provider::sensenova::SensenovaProvider::new(
                 if base_url.is_empty() {
                     None
                 } else {
@@ -187,9 +187,9 @@ fn get_model_for_provider_with_creds(
             // Register the user-chosen model list so `get_model` can
             // resolve names that aren't part of the SDK's preset set.
             if !model_list.is_empty() {
-                let infos: Vec<agentik::sdk::model::ModelInfo> = model_list
+                let infos: Vec<agentik_sdk::model::ModelInfo> = model_list
                     .iter()
-                    .map(|m| agentik::sdk::model::ModelInfo {
+                    .map(|m| agentik_sdk::model::ModelInfo {
                         model_name: m.clone(),
                         provider: "sensenova".to_string(),
                         ..Default::default()
@@ -380,7 +380,7 @@ pub async fn refresh_models(config: &ProviderConfig) -> Vec<String> {
     let fallback = default_models_for_type(ptype);
     match ptype {
         "mimo" => {
-            let _p = agentik::sdk::provider::mimo::MimoProvider::new(
+            let _p = agentik_sdk::provider::mimo::MimoProvider::new(
                 mimo_endpoint_from_url(&config.base_url),
                 config.api_key.clone(),
             );
@@ -388,7 +388,7 @@ pub async fn refresh_models(config: &ProviderConfig) -> Vec<String> {
             fallback
         }
         "minimax" => {
-            let p = agentik::sdk::provider::minimax::MinimaxProvider::new(
+            let p = agentik_sdk::provider::minimax::MinimaxProvider::new(
                 config.base_url.clone(),
                 config.api_key.clone(),
             );
@@ -398,7 +398,7 @@ pub async fn refresh_models(config: &ProviderConfig) -> Vec<String> {
                 .unwrap_or(fallback)
         }
         "sensenova" => {
-            let p = agentik::sdk::provider::sensenova::SensenovaProvider::new(
+            let p = agentik_sdk::provider::sensenova::SensenovaProvider::new(
                 if config.base_url.is_empty() {
                     None
                 } else {

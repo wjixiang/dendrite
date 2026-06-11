@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 use uuid::Uuid;
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_update_entity",
         "Update an entity's definition and/or nomenclatures. Use name_ref or id to locate the entity.",
@@ -15,9 +15,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegi
     .parameter("names", "array", "New nomenclature array: [{lang: 'ZH'|'EN', full: string, abbr?: string}]")
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let name_ref = input["name_ref"].as_str();

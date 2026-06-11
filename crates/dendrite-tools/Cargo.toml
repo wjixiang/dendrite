@@ -8,7 +8,8 @@ description = "External (domain-specific) tools for the agentik-core runtime. Bu
 kms = { path = "../kms" }
 corpus = { path = "../corpus" }
 
-agentik = { path = "../agentik" }
+agentik-core = { path = "../agentik-core" }
+agentik-sdk = { git = "ssh://git@github.com/wjixiang/agentik-sdk.git", branch = "main" }
 
 async-trait = { workspace = true }
 futures = "0.3"

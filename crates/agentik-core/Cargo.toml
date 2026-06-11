@@ -14,8 +14,8 @@ tokio = { version = "1", features = [
   "time",
 ] }
 uuid = { workspace = true }
-agentik-sdk = { path = "../agentik-sdk" }
-agentik-types = { path = "../agentik-types" }
+agentik-sdk = { git = "ssh://git@github.com/wjixiang/agentik-sdk.git", branch = "main" }
+agentik-types = { git = "ssh://git@github.com/wjixiang/agentik-sdk.git", branch = "main" }
 
 async-trait = { workspace = true }
 futures = { workspace = true }

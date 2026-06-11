@@ -12,7 +12,7 @@ pub use paste::summarize_paste;
 
 use std::time::Duration;
 
-use agentik::types::AgentEvent;
+use agentik_sdk::types::AgentEvent;
 use crossterm::event::Event;
 use ratatui::Terminal;
 
@@ -118,8 +118,8 @@ pub async fn run_app(
                 had_process_events = true;
                 // Register new agents on first sight.
                 match &event {
-                    agentik::core::process::ProcessEvent::StateChanged { agent_id, .. }
-                    | agentik::core::process::ProcessEvent::Agent { agent_id, .. } => {
+                    agentik_core::process::ProcessEvent::StateChanged { agent_id, .. }
+                    | agentik_core::process::ProcessEvent::Agent { agent_id, .. } => {
                         if !app.agent_panel.agents.iter().any(|e| e.agent_id == *agent_id) {
                             // Look up the title from the shared map.
                             let title = app
@@ -135,7 +135,7 @@ pub async fn run_app(
                 }
                 app.agent_panel.apply_process_event(&event);
                 // Trigger tree refresh when a sub-agent exits.
-                if let agentik::core::process::ProcessEvent::ProcessExited { .. } = &event {
+                if let agentik_core::process::ProcessEvent::ProcessExited { .. } = &event {
                     pending_refresh = true;
                 }
             }

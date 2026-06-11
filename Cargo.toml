@@ -1,10 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/agentik",
   "crates/agentik-core",
-  "crates/agentik-sdk",
-  "crates/agentik-types",
   "crates/corpus",
   "crates/dendrite-tools",
   "crates/agent-compose",

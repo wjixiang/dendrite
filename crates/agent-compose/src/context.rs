@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentik::core::context::{AgentContext, ContextChanges, ContextSnapshot};
+use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
 use serde_json::json;
 

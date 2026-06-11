@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "corpus_search",
         "Search a document for a keyword. Returns the top matching chunks \
@@ -18,9 +18,9 @@ pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::To
     .parameter("top_k", "number", "Maximum number of hits to return (default 10).")
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;

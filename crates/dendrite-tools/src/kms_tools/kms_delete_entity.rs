@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 use uuid::Uuid;
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_delete_entity",
         "Delete an entity and all its nomenclatures by UUID. Use kms_list_entities to find the ID of orphan or duplicate entities.",
@@ -13,9 +13,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegi
     .required("id")
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let id_str = input["id"].as_str().ok_or("missing 'id'")?;

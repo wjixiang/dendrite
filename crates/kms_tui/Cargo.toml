@@ -8,7 +8,8 @@ name = "kms-tui"
 path = "src/main.rs"
 
 [dependencies]
-agentik = { path = "../agentik" }
+agentik-core = { path = "../agentik-core" }
+agentik-sdk = { git = "ssh://git@github.com/wjixiang/agentik-sdk.git", branch = "main" }
 agent-compose = { path = "../agent-compose" }
 agent-knowledge = { path = "../agent-knowledge" }
 dendrite-tools = { path = "../dendrite-tools" }

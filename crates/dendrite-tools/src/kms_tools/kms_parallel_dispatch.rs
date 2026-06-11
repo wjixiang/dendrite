@@ -2,18 +2,18 @@
 //! sub-agents that each build a staging sub-tree in parallel, then
 //! fold the staging areas back into the main tree.
 //!
-//! Sub-agents are managed by `agentik::core::ProcessManager`, which
+//! Sub-agents are managed by `agentik_core::ProcessManager`, which
 //! handles lifecycle (spawn / start / stop), event forwarding via
 //! broadcast, and exit detection.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use agentik::core::process::ProcessEvent;
-use agentik::core::Agent;
-use agentik::sdk::model::model_pool::ModelPool;
-use agentik::types::messages::ContentBlock;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_core::process::ProcessEvent;
+use agentik_core::Agent;
+use agentik_sdk::model::model_pool::ModelPool;
+use agentik_sdk::types::messages::ContentBlock;
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -37,9 +37,9 @@ pub fn registration(
     sub_context_factory: Arc<
         dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> crate::SubAgentConfig + Send + Sync,
     >,
-    process_manager: Arc<agentik::core::process::ProcessManager>,
+    process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
-) -> agentik::core::tools::ToolRegistration {
+) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_parallel_dispatch",
         "Fan out a large knowledge-building task into multiple parallel sub-agents. \
@@ -56,9 +56,9 @@ pub fn registration(
     .required("subtasks")
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             let corpus = corpus.clone();
             let pool = pool.clone();
@@ -98,7 +98,7 @@ async fn dispatch_parallel(
     sub_context_factory: &Arc<
         dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> crate::SubAgentConfig + Send + Sync,
     >,
-    process_manager: &Arc<agentik::core::process::ProcessManager>,
+    process_manager: &Arc<agentik_core::process::ProcessManager>,
     agent_titles: &Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
     subtasks: Vec<SubTask>,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -227,7 +227,7 @@ async fn dispatch_parallel(
                         .cloned();
                     if let Some(sp) = sp {
                         let outcome = match status {
-                            agentik::core::process::ProcessExitStatus::Completed => Ok(()),
+                            agentik_core::process::ProcessExitStatus::Completed => Ok(()),
                             other => Err(format!("{:?}", other)),
                         };
                         results.push((sp, outcome));

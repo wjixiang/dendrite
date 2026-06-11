@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik::types::tools::{ToolBuilder, ToolResult};
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "corpus_ingest",
         "Explicitly ingest a long text document into the corpus. \
@@ -17,9 +17,9 @@ pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::To
     .parameter("source", "string", "Optional source description (e.g. file path, URL).")
     .build();
 
-    agentik::core::tools::ToolRegistration::new(
+    agentik_core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let title = input["title"].as_str().ok_or("missing 'title'")?;

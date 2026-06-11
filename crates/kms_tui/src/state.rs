@@ -283,10 +283,10 @@ pub struct App {
     pub ke_tab: KeTab,
     pub ke_scroll: u16,
 
-    pub agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik::core::Agent>>>,
+    pub agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
     pub agent_kind: AgentKind,
     pub agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>>,
-    pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik::types::AgentEvent>>,
+    pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_sdk::types::AgentEvent>>,
     pub agent_running: bool,
     pub agent_requesting: bool,
     /// True while the model is actively streaming token deltas
@@ -326,10 +326,10 @@ pub struct App {
     /// Singleton ProcessManager that manages all sub-agents spawned
     /// by parallel dispatch. Owned by the TUI, shared via Arc to the
     /// tool layer.
-    pub process_manager: Arc<agentik::core::process::ProcessManager>,
+    pub process_manager: Arc<agentik_core::process::ProcessManager>,
 
     /// Broadcast receiver for ProcessManager events (all managed agents).
-    pub process_event_rx: Option<tokio::sync::broadcast::Receiver<agentik::core::process::ProcessEvent>>,
+    pub process_event_rx: Option<tokio::sync::broadcast::Receiver<agentik_core::process::ProcessEvent>>,
 
     /// Shared map from agent UUID to human-readable title. Written by
     /// the dispatch tool after spawn(), read by the TUI to label agents.
@@ -409,11 +409,11 @@ impl App {
     pub fn new(
         svc: kms::KmsService,
         corpus: std::sync::Arc<corpus::CorpusService>,
-        agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik::core::Agent>>>,
+        agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
         providers: Vec<SettingsProvider>,
         provider_configs: Vec<ProviderConfig>,
         pool_entries: Vec<PoolEntry>,
-        process_manager: Arc<agentik::core::process::ProcessManager>,
+        process_manager: Arc<agentik_core::process::ProcessManager>,
         agent_titles: Arc<std::sync::RwLock<HashMap<uuid::Uuid, String>>>,
     ) -> Self {
         let mut tree_state = ListState::default();
