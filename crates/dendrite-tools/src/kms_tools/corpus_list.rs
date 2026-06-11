@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_list",
-        "List all documents in the document buffer. Returns metadata (id, title, \
+        "corpus_list",
+        "List all documents in the corpus. Returns metadata (id, title, \
          char_count, chunk_count, source, created_at) for each document — does NOT \
          return chunk contents.",
     )
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |_input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |_input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let docs = svc.list_documents().await?;
@@ -31,7 +31,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
                         })
                     })
                     .collect();
-                Ok(ToolResult::success_json("doc_list", serde_json::json!({ "documents": list })))
+                Ok(ToolResult::success_json("corpus_list", serde_json::json!({ "documents": list })))
             })
         })),
         vec![],

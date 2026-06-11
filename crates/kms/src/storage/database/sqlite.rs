@@ -987,6 +987,14 @@ mod tests {
             .run(&pool)
             .await
             .unwrap();
+        // The `knowledges.source_document_id` FK targets `documents(id)`
+        // which lives in the corpus crate. Stand up a minimal
+        // `documents` table so the FK constraint can be satisfied
+        // without pulling in the full corpus service.
+        sqlx::query("CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
         SqliteKnowledgeRepo::new(pool)
     }
 
@@ -994,6 +1002,10 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::migrate!("migrations/sqlite")
             .run(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY NOT NULL)")
+            .execute(&pool)
             .await
             .unwrap();
         SqliteIndexRepo::new(pool)
@@ -1688,194 +1700,4 @@ mod tests {
         assert_eq!(after.target_type, TargetType::Group);
         assert!(after.target.is_none());
     }
-}
-
-// ---------------------------------------------------------------------------
-// SqliteDocumentRepo
-// ---------------------------------------------------------------------------
-
-use crate::storage::repo::{DocumentChunkRow, DocumentRepo, DocumentRow};
-use crate::DocumentChunk;
-
-#[derive(Clone)]
-pub struct SqliteDocumentRepo {
-    pool: Pool<Sqlite>,
-}
-
-impl SqliteDocumentRepo {
-    pub fn new(pool: Pool<Sqlite>) -> Self {
-        Self { pool }
-    }
-
-    pub fn pool(&self) -> &Pool<Sqlite> {
-        &self.pool
-    }
-}
-
-impl DocumentRepo for SqliteDocumentRepo {
-    async fn create_document(
-        &self,
-        id: Uuid,
-        title: &str,
-        source: Option<&str>,
-        char_count: usize,
-        chunk_count: usize,
-        created_at: &str,
-    ) -> Result<(), StorageError> {
-        sqlx::query::<Sqlite>(
-            "INSERT INTO documents (id, title, source, char_count, chunk_count, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id.to_string())
-        .bind(title)
-        .bind(source)
-        .bind(char_count as i64)
-        .bind(chunk_count as i64)
-        .bind(created_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn create_chunk(&self, chunk: &DocumentChunk) -> Result<(), StorageError> {
-        sqlx::query::<Sqlite>(
-            "INSERT INTO document_chunks (document_id, chunk_index, content, char_start, char_end) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(chunk.document_id.to_string())
-        .bind(chunk.index as i64)
-        .bind(&chunk.content)
-        .bind(chunk.char_start as i64)
-        .bind(chunk.char_end as i64)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn list_documents(&self) -> Result<Vec<DocumentRow>, StorageError> {
-        let rows = sqlx::query_as::<Sqlite, DocumentRow>(
-            "SELECT id, title, source, char_count, chunk_count, created_at FROM documents ORDER BY created_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows)
-    }
-
-    async fn get_document(&self, id: Uuid) -> Result<Option<DocumentRow>, StorageError> {
-        sqlx::query_as::<Sqlite, DocumentRow>(
-            "SELECT id, title, source, char_count, chunk_count, created_at FROM documents WHERE id = ?",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn get_chunk(
-        &self,
-        doc_id: Uuid,
-        chunk_index: usize,
-    ) -> Result<Option<DocumentChunkRow>, StorageError> {
-        sqlx::query_as::<Sqlite, DocumentChunkRow>(
-            "SELECT document_id, chunk_index, content, char_start, char_end FROM document_chunks WHERE document_id = ? AND chunk_index = ?",
-        )
-        .bind(doc_id.to_string())
-        .bind(chunk_index as i64)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn get_chunks_window(
-        &self,
-        doc_id: Uuid,
-        start: usize,
-        end: usize,
-    ) -> Result<Vec<DocumentChunkRow>, StorageError> {
-        sqlx::query_as::<Sqlite, DocumentChunkRow>(
-            "SELECT document_id, chunk_index, content, char_start, char_end FROM document_chunks WHERE document_id = ? AND chunk_index >= ? AND chunk_index <= ? ORDER BY chunk_index",
-        )
-        .bind(doc_id.to_string())
-        .bind(start as i64)
-        .bind(end as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn delete_document(&self, id: Uuid) -> Result<(), StorageError> {
-        let result = sqlx::query("DELETE FROM documents WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() == 0 {
-            return Err(StorageError::NotFound(id));
-        }
-        Ok(())
-    }
-
-    async fn search_keyword(
-        &self,
-        doc_id: Uuid,
-        keyword: &str,
-    ) -> Result<Vec<(usize, String)>, StorageError> {
-        let lower = keyword.to_lowercase();
-        let rows: Vec<DocumentChunkRow> = sqlx::query_as(
-            "SELECT document_id, chunk_index, content, char_start, char_end FROM document_chunks WHERE document_id = ?",
-        )
-        .bind(doc_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut hits: Vec<(usize, String)> = Vec::new();
-        for row in rows {
-            let content_lower = row.content.to_lowercase();
-            if !content_lower.contains(&lower) {
-                continue;
-            }
-            let count = content_lower.matches(&lower).count();
-            let snippet = extract_snippet(&row.content, keyword, 120);
-            hits.push((row.chunk_index as usize, format!("[×{count}] {snippet}")));
-        }
-        // Sort by occurrence count descending.
-        hits.sort_by(|a, b| {
-            let ca: usize = a.1.split_once("[×").and_then(|(_, r)| r.split_once(']').map(|(n, _)| n.parse::<usize>().unwrap_or(0))).unwrap_or(0);
-            let cb: usize = b.1.split_once("[×").and_then(|(_, r)| r.split_once(']').map(|(n, _)| n.parse::<usize>().unwrap_or(0))).unwrap_or(0);
-            cb.cmp(&ca)
-        });
-        Ok(hits)
-    }
-}
-
-/// Extract a short snippet around the first occurrence of `keyword` in
-/// `text`, centred on the match and padded to at most `radius`
-/// characters on each side.
-fn extract_snippet(text: &str, keyword: &str, radius: usize) -> String {
-    let lower = text.to_lowercase();
-    let kw_lower = keyword.to_lowercase();
-    let start = match lower.find(&kw_lower) {
-        Some(i) => i,
-        None => return text.chars().take(radius * 2).collect(),
-    };
-    // Find the char boundary that best approximates `start - radius`.
-    let before = text.chars().take(start).count();
-    let skip = if before > radius { before - radius } else { 0 };
-    let snippet_start = text
-        .char_indices()
-        .nth(skip)
-        .map(|(b, _)| b)
-        .unwrap_or(0);
-    let snippet_end = text
-        .char_indices()
-        .nth(skip.min(text.chars().count()) + radius * 2)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len());
-    let snippet = &text[snippet_start..snippet_end.min(text.len())];
-    let mut s = String::new();
-    if skip > 0 {
-        s.push_str("…");
-    }
-    s.push_str(snippet.trim());
-    if snippet_end < text.len() {
-        s.push_str("…");
-    }
-    s
 }

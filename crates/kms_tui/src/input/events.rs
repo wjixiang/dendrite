@@ -1,4 +1,4 @@
-use agentik_types::AgentEvent;
+use agentik::types::AgentEvent;
 
 use crate::chat::ChatMessage;
 use crate::state::App;
@@ -86,7 +86,7 @@ pub fn finalize_streaming_history(history: &mut Vec<ChatMessage>) {
 }
 
 /// Handle a non-delta, non-lifecycle event.
-pub fn handle_final_event(app: &mut App, event: agentik_types::AgentEvent) {
+pub fn handle_final_event(app: &mut App, event: agentik::types::AgentEvent) {
     let kind = app.agent_kind;
     let history = app.agent_messages_map.get_mut(&kind).unwrap();
 

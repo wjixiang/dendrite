@@ -4,7 +4,6 @@ use crate::storage::{
     error::StorageError,
     types::{Entity, Index, Knowledge, Nomenclature},
 };
-use crate::DocumentChunk;
 
 /// Raw ancestor path row, ordered from the requested node up to the root.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -105,67 +104,4 @@ pub trait IndexRepo {
     /// Count the direct siblings of `node_id` (i.e. the number of
     /// children of its parent, including itself).
     async fn sibling_count(&self, node_id: Uuid) -> Result<usize, StorageError>;
-}
-
-/// Raw document row returned from the `documents` table.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct DocumentRow {
-    pub id: String,
-    pub title: String,
-    pub source: Option<String>,
-    pub char_count: i64,
-    pub chunk_count: i64,
-    pub created_at: String,
-}
-
-/// Raw document chunk row returned from the `document_chunks` table.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct DocumentChunkRow {
-    pub document_id: String,
-    pub chunk_index: i64,
-    pub content: String,
-    pub char_start: i64,
-    pub char_end: i64,
-}
-
-pub trait DocumentRepo {
-    async fn create_document(
-        &self,
-        id: Uuid,
-        title: &str,
-        source: Option<&str>,
-        char_count: usize,
-        chunk_count: usize,
-        created_at: &str,
-    ) -> Result<(), StorageError>;
-
-    async fn create_chunk(&self, chunk: &DocumentChunk) -> Result<(), StorageError>;
-
-    async fn list_documents(&self) -> Result<Vec<DocumentRow>, StorageError>;
-
-    async fn get_document(&self, id: Uuid) -> Result<Option<DocumentRow>, StorageError>;
-
-    async fn get_chunk(
-        &self,
-        doc_id: Uuid,
-        chunk_index: usize,
-    ) -> Result<Option<DocumentChunkRow>, StorageError>;
-
-    async fn get_chunks_window(
-        &self,
-        doc_id: Uuid,
-        start: usize,
-        end: usize,
-    ) -> Result<Vec<DocumentChunkRow>, StorageError>;
-
-    async fn delete_document(&self, id: Uuid) -> Result<(), StorageError>;
-
-    /// Search all chunks of a document for a keyword (case-insensitive
-    /// substring). Returns `(chunk_index, snippet)` pairs sorted by
-    /// the number of occurrences (descending).
-    async fn search_keyword(
-        &self,
-        doc_id: Uuid,
-        keyword: &str,
-    ) -> Result<Vec<(usize, String)>, StorageError>;
 }

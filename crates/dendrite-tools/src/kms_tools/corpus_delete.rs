@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_delete",
+        "corpus_delete",
         "Delete a document and all its chunks. Knowledge entries that reference \
          this document will have their source_document_id set to NULL.",
     )
@@ -13,9 +13,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .required("doc_id")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
@@ -24,7 +24,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
                 svc.delete_document(doc_id).await?;
 
                 Ok(ToolResult::success_json(
-                    "doc_delete",
+                    "corpus_delete",
                     serde_json::json!({
                         "doc_id": doc_id_str,
                         "deleted": true,

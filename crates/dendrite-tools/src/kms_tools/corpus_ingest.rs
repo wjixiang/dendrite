@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_ingest",
-        "Explicitly ingest a long text document into the document buffer. \
+        "corpus_ingest",
+        "Explicitly ingest a long text document into the corpus. \
          The text will be split into ~2000-char chunks with 200-char overlap.\n\n\
          Returns the document metadata including chunk count.",
     )
@@ -17,9 +17,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .parameter("source", "string", "Optional source description (e.g. file path, URL).")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let title = input["title"].as_str().ok_or("missing 'title'")?;
@@ -31,7 +31,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
                     .await?;
 
                 Ok(ToolResult::success_json(
-                    "doc_ingest",
+                    "corpus_ingest",
                     serde_json::json!({
                         "doc_id": doc.id.to_string(),
                         "title": doc.title,

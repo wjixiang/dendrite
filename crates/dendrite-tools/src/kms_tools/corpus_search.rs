@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_search",
+        "corpus_search",
         "Search a document for a keyword. Returns the top matching chunks \
          ranked by occurrence count (descending). Each hit includes the \
          chunk index and a short snippet.\n\n\
-         Use this to locate relevant sections before calling kms_doc_get_window.",
+         Use this to locate relevant sections before calling corpus_get_window.",
     )
     .parameter("doc_id", "string", "Document UUID to search within.")
     .required("doc_id")
@@ -18,9 +18,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .parameter("top_k", "number", "Maximum number of hits to return (default 10).")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
@@ -44,7 +44,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
                     .collect();
 
                 Ok(ToolResult::success_json(
-                    "doc_search",
+                    "corpus_search",
                     serde_json::json!({
                         "doc_id": doc_id_str,
                         "keyword": keyword,

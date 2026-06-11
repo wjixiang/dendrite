@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_move_index",
         "Move an index node (and its entire subtree) to a new parent. Use this to restructure the tree without creating duplicates.",
@@ -14,9 +14,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .required("new_parent_title")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let index_title = input["index_title"]

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>, _corpus: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_create_knowledge",
         "Create a knowledge entry about an entity or entities. Knowledge can be an 'aspect' (about one entity) or 'relation' (between multiple entities).",
@@ -19,9 +19,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .required("entities")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let title = input["title"].as_str().ok_or("missing 'title'")?;

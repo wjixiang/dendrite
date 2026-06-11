@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use agent_compose::{KmsContext, ParallelComposeContext};
 use agent_knowledge::KnowledgeContext;
-use agentik_types::AgentEvent;
-use agentik_types::messages::ContentBlock;
+use agentik::types::AgentEvent;
+use agentik::types::messages::ContentBlock;
 
 use crate::chat::ChatMessage;
 use crate::state::{AgentKind, App};
@@ -13,34 +13,40 @@ use super::paste;
 /// Rebuild all three agents with the given model pool and service reference.
 pub async fn rebuild_all_agents(
     app: &mut App,
-    pool: &Arc<agentik_sdk::model::model_pool::ModelPool>,
+    pool: &Arc<agentik::sdk::model::model_pool::ModelPool>,
 ) {
     let svc = app.svc.clone();
     let svc_arc = Arc::new(svc);
+    let corpus_arc = app.corpus.clone();
 
     // Compose agent — stateless, initialized once with root local_view.
     // Keep the concrete type so we can call `initialize()` before
     // erasing to the trait object.
-    let compose_ctx_arc = Arc::new(KmsContext::new(svc_arc.clone()));
+    let compose_ctx_arc = Arc::new(KmsContext::new(svc_arc.clone(), corpus_arc.clone()));
     let _ = compose_ctx_arc.initialize().await;
-    let compose_ctx: Arc<dyn agentik_core::context::AgentContext> = compose_ctx_arc;
-    let compose_tools = dendrite_tools::registrations(svc_arc.clone(), compose_ctx.clone());
+    let compose_ctx: Arc<dyn agentik::core::context::AgentContext> = compose_ctx_arc;
+    let compose_tools = dendrite_tools::registrations(
+        svc_arc.clone(),
+        corpus_arc.clone(),
+        compose_ctx.clone(),
+    );
 
     // Knowledge agent
     let knowledge_ctx_arc = Arc::new(KnowledgeContext::new(svc_arc.clone()));
     let _ = knowledge_ctx_arc.initialize().await;
-    let knowledge_ctx: Arc<dyn agentik_core::context::AgentContext> = knowledge_ctx_arc;
-    let knowledge_tools = dendrite_tools::readonly_registrations(svc_arc.clone());
+    let knowledge_ctx: Arc<dyn agentik::core::context::AgentContext> = knowledge_ctx_arc;
+    let knowledge_tools =
+        dendrite_tools::readonly_registrations(svc_arc.clone(), corpus_arc.clone());
 
     // Parallel agent — stateless, initialized once with root local_view.
     let parallel_ctx_arc = Arc::new(ParallelComposeContext::new(svc_arc.clone()));
     let _ = parallel_ctx_arc.initialize().await;
-    let parallel_ctx: Arc<dyn agentik_core::context::AgentContext> = parallel_ctx_arc;
+    let parallel_ctx: Arc<dyn agentik::core::context::AgentContext> = parallel_ctx_arc;
 
     let sub_factory: Arc<
         dyn Fn(
                 Arc<kms::KmsService>,
-                Arc<agentik_sdk::model::model_pool::ModelPool>,
+                Arc<agentik::sdk::model::model_pool::ModelPool>,
                 String,
             ) -> dendrite_tools::SubAgentConfig
             + Send
@@ -63,6 +69,7 @@ pub async fn rebuild_all_agents(
     });
     let parallel_tools = dendrite_tools::parallel_registrations(
         svc_arc.clone(),
+        corpus_arc.clone(),
         parallel_ctx.clone(),
         pool.clone(),
         sub_factory,
@@ -92,7 +99,7 @@ pub async fn rebuild_all_agents(
             agent_compose::PARALLEL_COMPOSE_PROMPT,
         ),
     ] {
-        match agentik_core::Agent::builder()
+        match agentik::core::Agent::builder()
             .with_model_pool(pool.clone())
             .with_context(ctx)
             .with_system_prompt_section(prompt)
@@ -216,15 +223,15 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
 
     // 5. Perform ingestion synchronously (it's fast: just DB writes).
     //    The agent doesn't start until we're done.
-    let svc = app.svc.clone();
-    let svc_inner = svc.clone();
+    let corpus = app.corpus.clone();
+    let corpus_inner = corpus.clone();
     let ingest_items = ingest_queue.clone();
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
             for content in &ingest_items {
                 let title = generate_paste_title(content);
-                let _ = svc_inner.ingest_document(&title, None, content).await;
+                let _ = corpus_inner.ingest_document(&title, None, content).await;
             }
         });
     });
@@ -244,7 +251,7 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
             if let Some(end) = rest.find(&end_marker) {
                 let title = generate_paste_title(content);
                 model_text = format!(
-                    "{}[长文本已上传「{}」为文档，使用 kms_doc_search / kms_doc_get_window 按需读取]{}",
+                    "{}[长文本已上传「{}」为文档，使用 corpus_search / corpus_get_window 按需读取]{}",
                     &model_text[..pos],
                     title,
                     &rest[end + end_marker.len()..],

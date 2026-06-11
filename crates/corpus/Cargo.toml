@@ -1,0 +1,12 @@
+[package]
+name = "corpus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = { workspace = true }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tracing = { workspace = true }
+uuid = { version = "1.23", features = ["v4"] }

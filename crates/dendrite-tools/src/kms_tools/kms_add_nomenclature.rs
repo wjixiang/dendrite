@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 use uuid::Uuid;
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<kms::KmsService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_add_nomenclature",
         "Add a new nomenclature (name variant) to an existing entity. Use this when an entity needs an additional name in another language, an abbreviation, or an alias.",
@@ -18,9 +18,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .required("full")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let id_str = input["entity_id"].as_str().ok_or("missing 'entity_id'")?;

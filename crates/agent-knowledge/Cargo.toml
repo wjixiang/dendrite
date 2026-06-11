@@ -5,10 +5,11 @@ edition = "2024"
 description = "Read-only knowledge retrieval agent context."
 
 [dependencies]
-agentik-core = { workspace = true }
+agentik = { workspace = true }
 
 dendrite-tools = { path = "../dendrite-tools" }
 kms = { path = "../kms" }
+corpus = { path = "../corpus" }
 
 async-trait = { workspace = true }
 serde_json = { workspace = true }

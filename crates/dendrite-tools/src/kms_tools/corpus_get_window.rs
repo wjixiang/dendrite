@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_get_window",
+        "corpus_get_window",
         "Return a window of chunks centred on a given chunk index. \
          Useful for reading context around a search hit.\n\n\
          Returns chunks [chunk_index - before, chunk_index + after], \
@@ -19,9 +19,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .parameter("after", "integer", "Number of chunks after the centre (default 1).")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
@@ -39,7 +39,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
                 }
 
                 Ok(ToolResult::success_json(
-                    "doc_get_window",
+                    "corpus_get_window",
                     serde_json::json!({
                         "doc_id": doc_id_str,
                         "chunks": chunks.len(),

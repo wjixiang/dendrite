@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -8,46 +10,9 @@ use crate::view::{IndexView, LocalView, SUBTREE_TITLES_LIMIT};
 
 use crate::Diagnostic;
 use crate::diagnostics;
-use crate::document::{self, Document, DocumentChunk, ChunkHit, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP};
+use corpus::CorpusService;
 
-use crate::storage::repo::{DocumentRepo, EntityRepo, IndexRepo, KnowledgeRepo};
-
-/// Returns the current UTC time as an ISO-8601 string
-/// (`YYYY-MM-DDTHH:MM:SSZ`). Uses `std::time::SystemTime` to avoid
-/// adding a `chrono` dependency.
-fn iso_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let total_secs = d.as_secs();
-
-    // Algorithm: convert epoch seconds to (year, month, day, hour, min, sec).
-    let mut days = (total_secs / 86400) as i64;
-    let secs_of_day = (total_secs % 86400) as u32;
-    let hh = secs_of_day / 3600;
-    let mm = (secs_of_day % 3600) / 60;
-    let ss = secs_of_day % 60;
-
-    // Shift epoch from 1970-01-01 to 0000-03-01 (algorithm simplification).
-    days += 719468;
-    let era = if days >= 0 {
-        days / 146097
-    } else {
-        (days - 146096) / 146097
-    };
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 + doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
-}
+use crate::storage::repo::{EntityRepo, IndexRepo, KnowledgeRepo};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EntityFilter {
@@ -64,10 +29,11 @@ struct Inner {
 pub struct KmsService {
     inner: std::sync::Arc<Inner>,
     storage: Storage,
+    corpus: Arc<CorpusService>,
 }
 
 impl KmsService {
-    pub async fn new(db_path: &str) -> Result<Self, String> {
+    pub async fn new(db_path: &str, corpus: Arc<CorpusService>) -> Result<Self, String> {
         let storage = Storage::new(db_path).await?;
 
         let root_id = ensure_root_index(&storage).await?;
@@ -76,7 +42,12 @@ impl KmsService {
             pointer: RwLock::new(root_id),
         });
 
-        Ok(KmsService { inner, storage })
+        Ok(KmsService { inner, storage, corpus })
+    }
+
+    /// Borrow the corpus service handle held by this KMS.
+    pub fn corpus(&self) -> &Arc<CorpusService> {
+        &self.corpus
     }
 
     pub fn pool(&self) -> &sqlx::SqlitePool {
@@ -953,6 +924,7 @@ impl KmsService {
                 pointer: tokio::sync::RwLock::new(pointer),
             }),
             storage: self.storage.clone(),
+            corpus: self.corpus.clone(),
         }
     }
 
@@ -1388,189 +1360,13 @@ impl KmsService {
     }
 
     // -----------------------------------------------------------------
-    //  Document buffer layer
+    //  Knowledge (cross-corpus provenance)
     // -----------------------------------------------------------------
-
-    /// Ingest a long text document: split into chunks and persist to
-    /// the `documents` / `document_chunks` tables. Returns the
-    /// [`Document`] metadata.
-    pub async fn ingest_document(
-        &self,
-        title: &str,
-        source: Option<&str>,
-        content: &str,
-    ) -> Result<Document, String> {
-        let id = Uuid::new_v4();
-        let chunks = document::chunk_text(id, content, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
-        let char_count = content.chars().count();
-        let chunk_count = chunks.len();
-        let created_at = iso_now();
-
-        self.storage
-            .document
-            .create_document(id, title, source, char_count, chunk_count, &created_at)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        for chunk in &chunks {
-            self.storage
-                .document
-                .create_chunk(chunk)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-
-        Ok(Document {
-            id,
-            title: title.to_string(),
-            source: source.map(|s| s.to_string()),
-            char_count,
-            chunk_count,
-            created_at,
-        })
-    }
-
-    /// List all stored documents (metadata only, no chunks).
-    pub async fn list_documents(&self) -> Result<Vec<Document>, String> {
-        let rows = self
-            .storage
-            .document
-            .list_documents()
-            .await
-            .map_err(|e| e.to_string())?;
-        rows.into_iter()
-            .map(|r| {
-                Ok(Document {
-                    id: Uuid::parse_str(&r.id).map_err(|e| e.to_string())?,
-                    title: r.title,
-                    source: r.source,
-                    char_count: r.char_count.max(0) as usize,
-                    chunk_count: r.chunk_count.max(0) as usize,
-                    created_at: r.created_at,
-                })
-            })
-            .collect()
-    }
-
-    /// Get metadata for a single document.
-    pub async fn get_document(&self, id: Uuid) -> Result<Document, String> {
-        let row = self
-            .storage
-            .document
-            .get_document(id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("document not found: {id}"))?;
-        Ok(Document {
-            id,
-            title: row.title,
-            source: row.source,
-            char_count: row.char_count.max(0) as usize,
-            chunk_count: row.chunk_count.max(0) as usize,
-            created_at: row.created_at,
-        })
-    }
-
-    /// Get a single chunk by (doc_id, chunk_index).
-    pub async fn get_document_chunk(
-        &self,
-        id: Uuid,
-        chunk_index: usize,
-    ) -> Result<DocumentChunk, String> {
-        let row = self
-            .storage
-            .document
-            .get_chunk(id, chunk_index)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| {
-                format!("chunk {chunk_index} not found in document {id}")
-            })?;
-        Ok(DocumentChunk {
-            document_id: id,
-            index: row.chunk_index.max(0) as usize,
-            content: row.content,
-            char_start: row.char_start.max(0) as usize,
-            char_end: row.char_end.max(0) as usize,
-        })
-    }
-
-    /// Get a window of chunks: `[chunk_index - before, chunk_index + after]`.
-    /// Automatically clamped to `[0, chunk_count)`.
-    pub async fn get_document_chunk_window(
-        &self,
-        id: Uuid,
-        chunk_index: usize,
-        before: usize,
-        after: usize,
-    ) -> Result<Vec<DocumentChunk>, String> {
-        let doc = self.get_document(id).await?;
-        let start = chunk_index.saturating_sub(before);
-        let end = (chunk_index + after).min(doc.chunk_count.saturating_sub(1));
-        let rows = self
-            .storage
-            .document
-            .get_chunks_window(id, start, end)
-            .await
-            .map_err(|e| e.to_string())?;
-        rows.into_iter()
-            .map(|r| {
-                Ok(DocumentChunk {
-                    document_id: id,
-                    index: r.chunk_index.max(0) as usize,
-                    content: r.content,
-                    char_start: r.char_start.max(0) as usize,
-                    char_end: r.char_end.max(0) as usize,
-                })
-            })
-            .collect()
-    }
-
-    /// Search a document for a keyword. Returns the top `top_k`
-    /// chunks ranked by occurrence count (descending).
-    pub async fn search_document(
-        &self,
-        id: Uuid,
-        keyword: &str,
-        top_k: usize,
-    ) -> Result<Vec<ChunkHit>, String> {
-        let hits = self
-            .storage
-            .document
-            .search_keyword(id, keyword)
-            .await
-            .map_err(|e| e.to_string())?;
-        let _doc = self.get_document(id).await?;
-        Ok(hits
-            .into_iter()
-            .take(top_k)
-            .map(|(idx, snippet)| {
-                let chunk_start = idx.saturating_sub(1) * DEFAULT_CHUNK_SIZE;
-                ChunkHit {
-                    document_id: id,
-                    index: idx,
-                    snippet,
-                    char_start: chunk_start,
-                    char_end: chunk_start + DEFAULT_CHUNK_SIZE,
-                }
-            })
-            .collect())
-    }
-
-    /// Delete a document and all its chunks. CASCADE will remove
-    /// chunks automatically; knowledge rows that reference this
-    /// document will have `source_document_id` set to NULL.
-    pub async fn delete_document(&self, id: Uuid) -> Result<(), String> {
-        self.storage
-            .document
-            .delete_document(id)
-            .await
-            .map_err(|e| e.to_string())
-    }
 
     /// Like [`create_knowledge`](Self::create_knowledge) but accepts an
     /// optional `(source_document_id, source_chunk_idx)` pair for
-    /// provenance tracking.
+    /// provenance tracking. The `source_document_id` is validated
+    /// against the corpus service.
     pub async fn create_knowledge_with_source(
         &self,
         title: &str,
@@ -1580,7 +1376,14 @@ impl KmsService {
         source: Option<(Uuid, usize)>,
     ) -> Result<Knowledge, String> {
         let (source_document_id, source_chunk_idx) = match source {
-            Some((doc_id, chunk_idx)) => (Some(doc_id), Some(chunk_idx as i64)),
+            Some((doc_id, chunk_idx)) => {
+                if !self.corpus.document_exists(doc_id).await {
+                    return Err(format!(
+                        "source_document_id {doc_id} not found in corpus"
+                    ));
+                }
+                (Some(doc_id), Some(chunk_idx as i64))
+            }
             None => (None, None),
         };
         let knowledge = Knowledge {
@@ -1663,20 +1466,46 @@ mod tests {
     }
 
     async fn setup_service() -> KmsService {
+        // Use a per-test shared in-memory database so both services
+        // see the same `documents` table. The random UUID suffix
+        // isolates concurrent test cases from each other.
+        let db_path = format!(
+            "file:test-{}-{}?mode=memory&cache=shared",
+            std::process::id(),
+            Uuid::new_v4()
+        );
         let pool = SqlitePoolOptions::new()
-            .max_lifetime(std::time::Duration::from_secs(1))
-            .connect("sqlite::memory:")
+            .max_connections(8)
+            .connect(&db_path)
             .await
             .unwrap();
+        // Run KMS migrations first (creates `knowledges`, `indexes`,
+        // …). Then run corpus migrations (creates `documents`,
+        // `document_chunks`) on the same shared DB. We bypass
+        // `CorpusService::open`'s own migration step so the kms test
+        // pool owns the migration ledger; we then build a corpus
+        // service that shares the pool without re-running its
+        // migrations.
         sqlx::migrate!("migrations/sqlite")
             .run(&pool)
             .await
             .unwrap();
+        // The `__sqlite_backend` hook is a doc-hidden module that
+        // exposes the SQLite repo + migration runner for tests that
+        // share a pool. Production code goes through
+        // `CorpusService::open(Backend::Sqlite { ... })`.
+        corpus::__sqlite_backend::run_migrations_on_pool(&pool)
+            .await
+            .unwrap();
+        let corpus = corpus::CorpusService::from_repo(Arc::new(
+            corpus::__sqlite_backend::SqliteDocumentRepo::new(pool.clone()),
+        ));
         KmsService {
             inner: Arc::new(Inner {
                 pointer: RwLock::new(Uuid::nil()),
             }),
             storage: Storage::from_pool(pool),
+            corpus,
         }
     }
 

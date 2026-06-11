@@ -2,18 +2,18 @@
 //! sub-agents that each build a staging sub-tree in parallel, then
 //! fold the staging areas back into the main tree.
 //!
-//! Sub-agents are managed by `agentik_core::ProcessManager`, which
+//! Sub-agents are managed by `agentik::core::ProcessManager`, which
 //! handles lifecycle (spawn / start / stop), event forwarding via
 //! broadcast, and exit detection.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use agentik_core::process::ProcessEvent;
-use agentik_core::Agent;
-use agentik_sdk::model::model_pool::ModelPool;
-use agentik_types::messages::ContentBlock;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::core::process::ProcessEvent;
+use agentik::core::Agent;
+use agentik::sdk::model::model_pool::ModelPool;
+use agentik::types::messages::ContentBlock;
+use agentik::types::tools::{ToolBuilder, ToolResult};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -32,13 +32,14 @@ struct SubTask {
 
 pub fn registration(
     svc: Arc<kms::KmsService>,
+    corpus: Arc<corpus::CorpusService>,
     pool: Arc<ModelPool>,
     sub_context_factory: Arc<
         dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> crate::SubAgentConfig + Send + Sync,
     >,
-    process_manager: Arc<agentik_core::process::ProcessManager>,
+    process_manager: Arc<agentik::core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
-) -> agentik_core::tools::ToolRegistration {
+) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_parallel_dispatch",
         "Fan out a large knowledge-building task into multiple parallel sub-agents. \
@@ -55,10 +56,11 @@ pub fn registration(
     .required("subtasks")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
+            let corpus = corpus.clone();
             let pool = pool.clone();
             let sub_context_factory = sub_context_factory.clone();
             let process_manager = process_manager.clone();
@@ -75,6 +77,7 @@ pub fn registration(
 
                 dispatch_parallel(
                     &svc,
+                    &corpus,
                     &pool,
                     &sub_context_factory,
                     &process_manager,
@@ -90,11 +93,12 @@ pub fn registration(
 
 async fn dispatch_parallel(
     svc: &Arc<kms::KmsService>,
+    corpus: &Arc<corpus::CorpusService>,
     pool: &Arc<ModelPool>,
     sub_context_factory: &Arc<
         dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> crate::SubAgentConfig + Send + Sync,
     >,
-    process_manager: &Arc<agentik_core::process::ProcessManager>,
+    process_manager: &Arc<agentik::core::process::ProcessManager>,
     agent_titles: &Arc<std::sync::RwLock<HashMap<Uuid, String>>>,
     subtasks: Vec<SubTask>,
 ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -163,7 +167,7 @@ async fn dispatch_parallel(
         let content = p.sub_task.content.clone();
         let staging_title = p.sub_task.staging_title.clone();
 
-        let tools = crate::registrations(sub_svc.clone(), config.context.clone());
+        let tools = crate::registrations(sub_svc.clone(), corpus.clone(), config.context.clone());
         let agent_id = process_manager
             .spawn(
                 Agent::builder()
@@ -223,7 +227,7 @@ async fn dispatch_parallel(
                         .cloned();
                     if let Some(sp) = sp {
                         let outcome = match status {
-                            agentik_core::process::ProcessExitStatus::Completed => Ok(()),
+                            agentik::core::process::ProcessExitStatus::Completed => Ok(()),
                             other => Err(format!("{:?}", other)),
                         };
                         results.push((sp, outcome));

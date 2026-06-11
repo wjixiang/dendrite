@@ -1,7 +1,9 @@
-//! Document buffer layer: long user-pasted text is split into chunks
-//! and stored here so the LLM only ever sees lightweight references
-//! (`[doc:uuid, chunks=N]`) in its context window, fetching slices
-//! on demand through the `kms_doc_*` tools.
+//! Document chunking algorithm.
+//!
+//! Long user-pasted text is split into chunks and stored so the LLM
+//! only ever sees lightweight references (`[doc:uuid, chunks=N]`) in
+//! its context window, fetching slices on demand through the
+//! `corpus_*` tools.
 //!
 //! Chunking strategy (see [`chunk_text`]):
 //! - Split on blank-line paragraph boundaries.
@@ -18,7 +20,7 @@ use uuid::Uuid;
 
 /// Default chunk size in characters. ~500 tokens for English text,
 /// ~1k tokens for CJK-heavy text. Tuned to keep individual
-/// `kms_doc_get_chunk` responses well below the 8k-token mark even
+/// `corpus_get_chunk` responses well below the 8k-token mark even
 /// for the densest models.
 pub const DEFAULT_CHUNK_SIZE: usize = 2000;
 
@@ -52,7 +54,7 @@ pub struct DocumentChunk {
 }
 
 /// A single keyword hit inside a document. Returned by
-/// [`crate::service::KmsService::search_document`].
+/// [`crate::service::CorpusService::search_document`].
 #[derive(Debug, Clone)]
 pub struct ChunkHit {
     pub document_id: Uuid,
@@ -130,15 +132,6 @@ pub fn chunk_text(
                     char_start: p_start,
                     char_end: p_start + chars_count,
                 });
-                // The character offsets of subsequent slices of the
-                // same paragraph move forward; we recompute from
-                // the paragraph offset on the next iteration to
-                // keep things simple. Since the slices are stored
-                // sequentially, this is consistent enough for
-                // windowing and snippet use cases.
-                // (The more precise "stride" offset is not
-                // important for the LLM — chunk_index is what it
-                // uses.)
             }
             continue;
         }
@@ -187,8 +180,6 @@ pub fn chunk_text(
         });
     }
 
-    // The closures above leave the final empty-chunk (zero content)
-    // edge case handled by the early return at the top.
     chunks
 }
 
@@ -325,8 +316,6 @@ mod tests {
     #[test]
     fn paragraph_boundary_triggers_new_chunk() {
         // 4 paragraphs of 30 chars each. Target=70, overlap=10.
-        // Chunk 1: P1(30) + P2(30) = 60, then adding P3 (30) → 90 > 70 → split.
-        // Tail(10) of chunk 1 + P3(30) = 40, then adding P4 (30) → 70 ≤ 70 → stay.
         let p = "x".repeat(30);
         let text = format!("{p}\n\n{p}\n\n{p}\n\n{p}");
         let chunks = chunk_text(doc_id(), &text, 70, 10);
@@ -339,16 +328,14 @@ mod tests {
     #[test]
     fn overlap_carries_tail_across_chunks() {
         // Three paragraphs of 50 chars. Target=80, overlap=15.
-        // Chunk 1: P1(50) → buffer fills; P2 would push to 100>80, so flush chunk 1 = P1(50).
-        //   Tail(15) + P2(50) = 65 → adding P3(50) = 115>80 → flush chunk 2.
-        //   Tail(15) + P3(50) = 65 → end of input, flush chunk 3.
         let p = "a".repeat(50);
         let text = format!("{p}\n\n{p}\n\n{p}");
         let chunks = chunk_text(doc_id(), &text, 80, 15);
         assert!(chunks.len() >= 2);
         // Verify overlap: chunk 2's content should start with the
         // last 15 chars of chunk 1.
-        assert!(chunks[1].content.starts_with(&p.chars().rev().take(15).collect::<String>().chars().rev().collect::<String>()));
+        let tail: String = p.chars().rev().take(15).collect::<String>().chars().rev().collect();
+        assert!(chunks[1].content.starts_with(&tail));
     }
 
     #[test]
@@ -357,9 +344,6 @@ mod tests {
         let p: String = "中".repeat(20);
         let text = vec![p.clone(); 6].join("\n\n");
         let chunks = chunk_text(doc_id(), &text, 50, 10);
-        // First chunk should contain at most 2 paragraphs (40 chars) +
-        // possibly a bit more. The exact count depends on the
-        // accumulator but each chunk must be ≤ 50 chars.
         for c in &chunks {
             assert!(c.content.chars().count() <= 50);
         }

@@ -1,7 +1,7 @@
 //! Knowledge construction expert agent for the `agentik-core` runtime.
 //!
 //! This crate wires the domain-specific KMS service into the runtime-agnostic
-//! [`agentik_core::context::AgentContext`] contract. It is intentionally thin
+//! [`agentik::core::context::AgentContext`] contract. It is intentionally thin
 //! and is organised as follows:
 //!
 //! - [`context`]: the [`KmsContext`] implementation of [`AgentContext`].

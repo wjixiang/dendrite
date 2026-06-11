@@ -1,6 +1,6 @@
 //! Agent Status Panel — displays all agents managed by `ProcessManager`.
 //!
-//! Driven by `agentik_core::ProcessEvent` instead of the old
+//! Driven by `agentik::core::ProcessEvent` instead of the old
 //! `ParallelProgress` mpsc side-channel. Shows a list of managed agents
 //! with their status, streaming text, tool calls, and event logs.
 //!
@@ -9,8 +9,8 @@
 
 use std::time::{Duration, Instant};
 
-use agentik_core::process::ProcessEvent;
-use agentik_types::AgentEvent;
+use agentik::core::process::ProcessEvent;
+use agentik::types::AgentEvent;
 use ratatui::Frame;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -99,18 +99,18 @@ impl AgentPanelState {
                 if let Some(entry) = self.agents.iter_mut().find(|e| e.agent_id == *agent_id) {
                     let duration = entry.started_at.elapsed();
                     match status {
-                        agentik_core::process::ProcessExitStatus::Completed => {
+                        agentik::core::process::ProcessExitStatus::Completed => {
                             entry.status = AgentEntryStatus::Completed { duration };
                         }
-                        agentik_core::process::ProcessExitStatus::Error(msg)
-                        | agentik_core::process::ProcessExitStatus::Panicked(msg) => {
+                        agentik::core::process::ProcessExitStatus::Error(msg)
+                        | agentik::core::process::ProcessExitStatus::Panicked(msg) => {
                             entry.status = AgentEntryStatus::Failed {
                                 error: msg.clone(),
                                 duration,
                             };
                         }
-                        agentik_core::process::ProcessExitStatus::Cancelled
-                        | agentik_core::process::ProcessExitStatus::Stopped => {
+                        agentik::core::process::ProcessExitStatus::Cancelled
+                        | agentik::core::process::ProcessExitStatus::Stopped => {
                             entry.status = AgentEntryStatus::Completed { duration };
                         }
                     }

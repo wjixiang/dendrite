@@ -6,7 +6,7 @@ pub mod types;
 use sqlx::SqlitePool;
 
 use crate::storage::database::sqlite::{
-    SqliteDocumentRepo, SqliteEntityRepo, SqliteIndexRepo, SqliteKnowledgeRepo,
+    SqliteEntityRepo, SqliteIndexRepo, SqliteKnowledgeRepo,
 };
 
 #[derive(Clone)]
@@ -15,7 +15,6 @@ pub struct Storage {
     pub entity: SqliteEntityRepo,
     pub knowledge: SqliteKnowledgeRepo,
     pub index: SqliteIndexRepo,
-    pub document: SqliteDocumentRepo,
 }
 
 impl Storage {
@@ -29,8 +28,7 @@ impl Storage {
             pool: pool.clone(),
             entity: SqliteEntityRepo::new(pool.clone()),
             knowledge: SqliteKnowledgeRepo::new(pool.clone()),
-            index: SqliteIndexRepo::new(pool.clone()),
-            document: SqliteDocumentRepo::new(pool),
+            index: SqliteIndexRepo::new(pool),
         }
     }
 
@@ -47,6 +45,10 @@ async fn create_pool(db_path: &str) -> Result<SqlitePool, String> {
     }
     let url = if db_path.starts_with("sqlite://") {
         db_path.to_string()
+    } else if db_path.contains('?') {
+        // Caller already supplied query params (e.g. shared in-memory
+        // test DBs). Pass through verbatim.
+        format!("sqlite://{db_path}")
     } else {
         format!("sqlite://{}?mode=rwc", db_path)
     };

@@ -13,20 +13,20 @@ mod widgets;
 use std::io;
 use std::sync::Arc;
 
+use agent_compose::KmsContext;
+use agent_compose::ParallelComposeContext;
+use agent_knowledge::KnowledgeContext;
+use agentik::sdk::model::model_pool::ModelPool;
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use agent_compose::KmsContext;
-use agent_compose::ParallelComposeContext;
-use agent_knowledge::KnowledgeContext;
-use agentik_sdk::model::model_pool::ModelPool;
 use kms::KmsService;
 use ratatui::Terminal;
 
 use crate::input::run_app;
-use crate::settings::{build_pool_from_entries, load_settings, save_settings, ProviderConfig};
+use crate::settings::{ProviderConfig, build_pool_from_entries, load_settings, save_settings};
 use crate::state::{AgentKind, App, SettingsProvider};
 use crate::theme::Theme;
 
@@ -59,18 +59,18 @@ fn log_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("KMS_LOG_PATH") {
         return std::path::PathBuf::from(p);
     }
-    if let Some(data_dir) = std::env::var_os("XDG_DATA_HOME") {
-        let mut p = std::path::PathBuf::from(data_dir);
-        p.push("kms");
-        return p.join("tui.log");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = std::path::PathBuf::from(home);
-        p.push(".local");
-        p.push("share");
-        p.push("kms");
-        return p.join("tui.log");
-    }
+    // if let Some(data_dir) = std::env::var_os("XDG_DATA_HOME") {
+    //     let mut p = std::path::PathBuf::from(data_dir);
+    //     p.push("kms");
+    //     return p.join("tui.log");
+    // }
+    // if let Some(home) = std::env::var_os("HOME") {
+    //     let mut p = std::path::PathBuf::from(home);
+    //     p.push(".local");
+    //     p.push("share");
+    //     p.push("kms");
+    //     return p.join("tui.log");
+    // }
     std::path::PathBuf::from("data/tui.log")
 }
 
@@ -88,8 +88,7 @@ fn parse_attach_paths(args: &[String]) -> Vec<std::path::PathBuf> {
                 if let Some(s) = p.to_str() {
                     if s.starts_with("~/") {
                         if let Some(home) = std::env::var_os("HOME") {
-                            let resolved = std::path::PathBuf::from(home)
-                                .join(&s[2..]);
+                            let resolved = std::path::PathBuf::from(home).join(&s[2..]);
                             paths.push(resolved);
                             i += 2;
                             continue;
@@ -116,7 +115,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let attach_paths = parse_attach_paths(&std::env::args().collect::<Vec<_>>());
 
     let db_path = std::env::var("KMS_DB_PATH").unwrap_or_else(|_| "data/kms_sqlite.db".to_string());
-    let svc = KmsService::new(&db_path).await.map_err(|e| e.to_string())?;
+    // Build corpus first via the factory — it owns its own
+    // migrations and pool. KMS is then constructed on top of it.
+    let corpus = corpus::CorpusService::open(corpus::Backend::Sqlite {
+        path: db_path.clone(),
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let svc = KmsService::new(&db_path, corpus.clone())
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Ingest any --attach files before agent initialization so that
     // KmsContext::initialize() picks them up in available_documents.
@@ -133,7 +141,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "untitled".to_string());
         let source = path.to_string_lossy().to_string();
-        match svc.ingest_document(&title, Some(&source), &content).await {
+        match corpus
+            .ingest_document(&title, Some(&source), &content)
+            .await
+        {
             Ok(doc) => {
                 eprintln!(
                     "--attach: ingested \"{}\" ({} chunks, {} chars)",
@@ -176,14 +187,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Singleton ProcessManager — owned by the TUI, shared via Arc to
     // the tool layer so parallel dispatch can spawn sub-agents.
-    let process_manager = Arc::new(agentik_core::process::ProcessManager::new());
+    let process_manager = Arc::new(agentik::core::process::ProcessManager::new());
 
     // Shared title map: agent_id → human-readable title. Written by
     // the dispatch tool after spawn(), read by the TUI panel.
     let agent_titles = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
     // Build agents only when we have at least one working model.
-    let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>> =
+    let mut agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik::core::Agent>>> =
         HashMap::new();
 
     if !providers.is_empty()
@@ -193,15 +204,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pool_arc = Arc::new(pool);
 
         // Compose agent
-        let compose_ctx = Arc::new(KmsContext::new(Arc::new(svc.clone())));
+        let compose_ctx = Arc::new(KmsContext::new(Arc::new(svc.clone()), corpus.clone()));
         compose_ctx.initialize().await.map_err(|e| e.to_string())?;
 
-        let compose_agent = agentik_core::Agent::builder()
+        let compose_agent = agentik::core::Agent::builder()
             .with_model_pool(pool_arc.clone())
             .with_context(compose_ctx.clone())
             .with_system_prompt_section(agent_compose::KMS_SYSTEM_PROMPT)
             .with_tools(dendrite_tools::registrations(
                 Arc::new(svc.clone()),
+                corpus.clone(),
                 compose_ctx,
             ))
             .build()
@@ -210,13 +222,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Knowledge agent
         let knowledge_ctx = Arc::new(KnowledgeContext::new(Arc::new(svc.clone())));
-        knowledge_ctx.initialize().await.map_err(|e| e.to_string())?;
+        knowledge_ctx
+            .initialize()
+            .await
+            .map_err(|e| e.to_string())?;
 
-        let knowledge_agent = agentik_core::Agent::builder()
+        let knowledge_agent = agentik::core::Agent::builder()
             .with_model_pool(pool_arc.clone())
             .with_context(knowledge_ctx)
             .with_system_prompt_section(agent_knowledge::KNOWLEDGE_RETRIEVAL_PROMPT)
-            .with_tools(dendrite_tools::readonly_registrations(Arc::new(svc.clone())))
+            .with_tools(dendrite_tools::readonly_registrations(
+                Arc::new(svc.clone()),
+                corpus.clone(),
+            ))
             .build()
             .await
             .map_err(|e| e.to_string())?;
@@ -246,12 +264,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        let parallel_agent = agentik_core::Agent::builder()
+        let parallel_agent = agentik::core::Agent::builder()
             .with_model_pool(pool_arc.clone())
             .with_context(parallel_ctx.clone())
             .with_system_prompt_section(agent_compose::PARALLEL_COMPOSE_PROMPT)
             .with_tools(dendrite_tools::parallel_registrations(
                 Arc::new(svc.clone()),
+                corpus.clone(),
                 parallel_ctx,
                 pool_arc.clone(),
                 sub_factory,
@@ -262,7 +281,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| e.to_string())?;
 
-        agents.insert(AgentKind::Compose, Arc::new(tokio::sync::Mutex::new(compose_agent)));
+        agents.insert(
+            AgentKind::Compose,
+            Arc::new(tokio::sync::Mutex::new(compose_agent)),
+        );
         agents.insert(
             AgentKind::Knowledge,
             Arc::new(tokio::sync::Mutex::new(knowledge_agent)),
@@ -280,6 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = App::new(
         svc,
+        corpus,
         agents,
         providers,
         provider_configs,
@@ -292,8 +315,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initial load: knowledge tree
     let root_children = app.svc.get_children(None).await?;
-    let mut stack: Vec<(kms::Index, usize)> =
-        root_children.into_iter().map(|c| (c, 0)).collect();
+    let mut stack: Vec<(kms::Index, usize)> = root_children.into_iter().map(|c| (c, 0)).collect();
 
     while let Some((node, depth)) = stack.pop() {
         let title = node.title.as_deref().unwrap_or("(unnamed)");

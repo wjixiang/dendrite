@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/corpus",
   "crates/dendrite-tools",
   "crates/agent-compose",
   "crates/agent-knowledge",
@@ -9,13 +10,13 @@ members = [
 ]
 
 [workspace.dependencies]
-# Each agentik sub-project lives in its own git repo (submodule layout).
-# They MUST all use their correct git URL — Cargo unifies by (name, version, source),
-# so mixing URLs causes duplicate compilations and breaks type identity for
-# AgentContext, ModelPool, ContentBlock, ToolRegistration, etc.
-agentik-core = { git = "https://github.com/wjixiang/agentik-core.git" }
-agentik-sdk = { git = "https://github.com/wjixiang/agentik-sdk.git" }
-agentik-types = { git = "https://github.com/wjixiang/agentik-types.git" }
+# Single umbrella dependency for the agentik ecosystem. The upstream
+# monorepo at github.com/wjixiang/agentik publishes one crate `agentik`
+# that wholesale re-exports agentik-core, agentik-sdk, and agentik-types
+# under `agentik::core`, `agentik::sdk`, `agentik::types`. All dendrite
+# code goes through this single dependency so Cargo can never split the
+# ecosystem across multiple sources.
+agentik = { git = "https://github.com/wjixiang/agentik.git" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

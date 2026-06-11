@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_get_metadata",
+        "corpus_get_metadata",
         "Get metadata for a single document, including a preview of the \
          first chunk's first 200 characters.",
     )
@@ -13,9 +13,9 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
     .required("doc_id")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
@@ -23,7 +23,6 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
 
                 let doc = svc.get_document(doc_id).await?;
 
-                // Peek at chunk 0 for a preview.
                 let preview = match svc.get_document_chunk(doc_id, 0).await {
                     Ok(chunk) => {
                         let chars: String = chunk.content.chars().take(200).collect();
@@ -37,7 +36,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
                 };
 
                 Ok(ToolResult::success_json(
-                    "doc_get_metadata",
+                    "corpus_get_metadata",
                     serde_json::json!({
                         "doc_id": doc.id.to_string(),
                         "title": doc.title,

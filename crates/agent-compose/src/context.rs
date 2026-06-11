@@ -12,26 +12,37 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
+use agentik::core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
 use serde_json::json;
 
 pub struct KmsContext {
     kms: Arc<kms::KmsService>,
+    corpus: Arc<corpus::CorpusService>,
     state: std::sync::RwLock<ContextSnapshot>,
 }
 
 impl KmsContext {
-    pub fn new(kms: Arc<kms::KmsService>) -> Self {
+    pub fn new(kms: Arc<kms::KmsService>, corpus: Arc<corpus::CorpusService>) -> Self {
         Self {
             kms,
+            corpus,
             state: std::sync::RwLock::new(ContextSnapshot::default()),
         }
     }
 
     pub async fn from_path(db_path: &str) -> Result<Self, String> {
-        let svc = kms::KmsService::new(db_path).await?;
-        Ok(Self::new(Arc::new(svc)))
+        // Build the corpus first via the factory so KMS can validate
+        // source_document_id references against it. Both services
+        // point at the same DB file; the corpus migration runs first
+        // and the KMS migration second.
+        let corpus = corpus::CorpusService::open(corpus::Backend::Sqlite {
+            path: db_path.to_string(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let svc = Arc::new(kms::KmsService::new(db_path, corpus.clone()).await?);
+        Ok(Self::new(svc, corpus))
     }
 
     /// Inject a one-shot `local_view` of the index root, a list of
@@ -40,7 +51,7 @@ impl KmsContext {
     /// `inject_context_if_changed` fires once at startup (version 0 → 1).
     pub async fn initialize(&self) -> Result<(), String> {
         let view = self.kms.get_local_view_by_path("/").await?;
-        let docs = self.kms.list_documents().await.unwrap_or_default();
+        let docs = self.corpus.list_documents().await.unwrap_or_default();
         let diags = self.kms.diagnose().await.unwrap_or_default();
         let mut data = HashMap::new();
         data.insert("local_view".into(), json!(render_local_view(&view)));
@@ -140,21 +151,21 @@ fn render_local_view(view: &kms::LocalView) -> String {
 }
 
 /// Render the list of available documents as a concise index block.
-fn render_document_index(docs: &[kms::Document]) -> String {
+fn render_document_index(docs: &[corpus::Document]) -> String {
     use std::fmt::Write;
     let mut s = String::new();
 
     let total_chunks: usize = docs.iter().map(|d| d.chunk_count).sum();
 
     if docs.is_empty() {
-        let _ = writeln!(s, "## 文档缓冲层");
+        let _ = writeln!(s, "## 语料库");
         let _ = writeln!(s, "当前无已上传文档。用户粘贴长文本时系统将自动切块并存储。");
         return s;
     }
 
     let _ = writeln!(
         s,
-        "## 文档缓冲层（启动时一次性注入）\n当前已上传 {} 个文档（合计 {} 块）：",
+        "## 语料库（启动时一次性注入）\n当前已上传 {} 个文档（合计 {} 块）：",
         docs.len(),
         total_chunks
     );
@@ -177,8 +188,8 @@ fn render_document_index(docs: &[kms::Document]) -> String {
     let _ = writeln!(s);
     let _ = writeln!(
         s,
-        "**如何阅读**：用 `kms_doc_search(\"\", \"关键词\", top_k=5)` 找到相关块，\
-         再用 `kms_doc_get_window(\"\", chunk_index=17, before=1, after=1)` 读取上下文。\
+        "**如何阅读**：用 `corpus_search(\"\", \"关键词\", top_k=5)` 找到相关块，\
+         再用 `corpus_get_window(\"\", chunk_index=17, before=1, after=1)` 读取上下文。\
          知识创建时把 `source_document_id` + `source_chunk_idx` 一起传入以便追溯。"
     );
 
@@ -222,7 +233,17 @@ mod tests {
 
     #[tokio::test]
     async fn renderer_handles_root() {
-        let svc = kms::KmsService::new(":memory:").await;
+        let db_path = format!(
+            "file:test-{}-{}?mode=memory&cache=shared",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        );
+        let corpus = corpus::CorpusService::open(corpus::Backend::Sqlite {
+            path: db_path.clone(),
+        })
+        .await
+        .unwrap();
+        let svc = kms::KmsService::new(&db_path, corpus.clone()).await;
         if let Ok(svc) = svc {
             let view = svc.get_local_view_by_path("/").await;
             if let Ok(view) = view {

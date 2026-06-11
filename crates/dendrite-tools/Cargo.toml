@@ -6,10 +6,9 @@ description = "External (domain-specific) tools for the agentik-core runtime. Bu
 
 [dependencies]
 kms = { path = "../kms" }
+corpus = { path = "../corpus" }
 
-agentik-core = { workspace = true }
-agentik-sdk = { workspace = true }
-agentik-types = { workspace = true }
+agentik = { workspace = true }
 
 async-trait = { workspace = true }
 futures = "0.3"

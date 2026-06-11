@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentik_core::context::{AgentContext, ContextChanges, ContextSnapshot};
+use agentik::core::context::{AgentContext, ContextChanges, ContextSnapshot};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -19,7 +19,14 @@ impl KnowledgeContext {
     }
 
     pub async fn from_path(db_path: &str) -> Result<Self, String> {
-        let svc = kms::KmsService::new(db_path).await?;
+        // Build corpus first via the factory so KMS can validate
+        // source_document_id references against it.
+        let corpus = corpus::CorpusService::open(corpus::Backend::Sqlite {
+            path: db_path.to_string(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let svc = kms::KmsService::new(db_path, corpus).await?;
         Ok(Self::new(Arc::new(svc)))
     }
 
@@ -126,7 +133,17 @@ mod tests {
     async fn render_local_view_handles_root() {
         // Smoke test: build a service with no children and ensure the
         // renderer doesn't panic.
-        let svc = kms::KmsService::new(":memory:").await;
+        let db_path = format!(
+            "file:test-{}-{}?mode=memory&cache=shared",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        );
+        let corpus = corpus::CorpusService::open(corpus::Backend::Sqlite {
+            path: db_path.clone(),
+        })
+        .await
+        .unwrap();
+        let svc = kms::KmsService::new(&db_path, corpus).await;
         if let Ok(svc) = svc {
             let view = svc.get_local_view_by_path("/").await;
             if let Ok(view) = view {

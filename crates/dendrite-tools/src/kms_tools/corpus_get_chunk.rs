@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use agentik_types::tools::{ToolBuilder, ToolResult};
+use agentik::types::tools::{ToolBuilder, ToolResult};
 
-pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
+pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik::core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
-        "kms_doc_get_chunk",
+        "corpus_get_chunk",
         "Return the full text content of a single document chunk.",
     )
-    .parameter("doc_id", "string", "Document UUID (from kms_doc_list).")
+    .parameter("doc_id", "string", "Document UUID (from corpus_list).")
     .required("doc_id")
     .parameter("chunk_index", "integer", "Zero-based chunk index.")
     .required("chunk_index")
     .build();
 
-    agentik_core::tools::ToolRegistration::new(
+    agentik::core::tools::ToolRegistration::new(
         definition,
-        Box::new(agentik_core::tools::SimpleTool::new(move |input: Value| {
+        Box::new(agentik::core::tools::SimpleTool::new(move |input: Value| {
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
@@ -25,7 +25,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
 
                 let chunk = svc.get_document_chunk(doc_id, chunk_index).await?;
                 Ok(ToolResult::success_json(
-                    "doc_get_chunk",
+                    "corpus_get_chunk",
                     serde_json::json!({
                         "doc_id": doc_id_str,
                         "chunk_index": chunk.index,
