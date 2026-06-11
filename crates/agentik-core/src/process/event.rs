@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use agentik_types::AgentUiEvent;
+use agentik_sdk::types::AgentUiEvent;
 
 use crate::lifecycle::AgentLifecycleStatus;
 

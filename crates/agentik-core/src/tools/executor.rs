@@ -9,7 +9,7 @@ use tokio::time::sleep;
 
 use super::error::{ToolError, ToolOperationResult};
 use super::registry::ToolRegistry;
-use agentik_types::{ContentBlock, Message, ToolResult, ToolUse};
+use agentik_sdk::types::{ContentBlock, Message, ToolResult, ToolUse};
 
 /// Configuration for tool execution.
 #[derive(Debug, Clone)]

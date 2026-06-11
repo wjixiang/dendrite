@@ -56,7 +56,7 @@ use agentik_sdk::{
     provider::mimo::{MimoEndpoint, MimoProvider, TokenPlanRegion},
 };
 use agentik_sdk::{model::model_pool::ModelPool, provider::mimo::MODEL_MIMO_V2_5};
-use agentik_types::AgentEvent;
+use agentik_sdk::types::AgentEvent;
 
 // ── Helper: build an InMemoryAgentContext with initial data ──────
 

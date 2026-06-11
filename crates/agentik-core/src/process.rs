@@ -270,7 +270,7 @@ impl ProcessManager {
     pub fn inject_message(
         &self,
         agent_id: &Uuid,
-        content: Vec<agentik_types::messages::ContentBlock>,
+        content: Vec<agentik_sdk::types::messages::ContentBlock>,
     ) -> Result<(), ProcessError> {
         let entries = self
             .entries
@@ -418,7 +418,7 @@ async fn run_agent_task(
 /// and detects agent-task exit.
 async fn forward_agent_events(
     agent_id: Uuid,
-    mut agent_event_rx: mpsc::UnboundedReceiver<agentik_types::AgentUiEvent>,
+    mut agent_event_rx: mpsc::UnboundedReceiver<agentik_sdk::types::AgentUiEvent>,
     broadcast_tx: broadcast::Sender<ProcessEvent>,
     mut status_rx: watch::Receiver<AgentLifecycleStatus>,
     mut task_handle: tokio::task::JoinHandle<ProcessExitStatus>,

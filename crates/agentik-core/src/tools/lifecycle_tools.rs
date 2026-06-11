@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use agentik_types::ToolEffect;
-use agentik_types::tools::{ToolBuilder, ToolResult, ToolResultContent};
+use agentik_sdk::types::ToolEffect;
+use agentik_sdk::types::tools::{ToolBuilder, ToolResult, ToolResultContent};
 
 use super::toolset::ToolRegistration;
 use super::ToolFunction;
@@ -16,7 +16,7 @@ pub struct AttemptCompleteTool;
 
 #[async_trait]
 impl ToolFunction for AttemptCompleteTool {
-    fn definition(&self) -> agentik_types::Tool {
+    fn definition(&self) -> agentik_sdk::types::Tool {
         ToolBuilder::new("attempt_complete", "Signal that the ENTIRE user request is fulfilled. Only call this when every part of the request has been completed. Do NOT call this for intermediate steps.")
             .parameter("reason", "string", "Brief explanation of why the task is complete")
             .required("reason")
@@ -44,7 +44,7 @@ pub struct AbortTaskTool;
 
 #[async_trait]
 impl ToolFunction for AbortTaskTool {
-    fn definition(&self) -> agentik_types::Tool {
+    fn definition(&self) -> agentik_sdk::types::Tool {
         ToolBuilder::new(
             "abort_task",
             "Signal that the current task cannot or should not be completed. \

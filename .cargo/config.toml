@@ -1,0 +1,6 @@
+# Cargo's built-in git fetcher can't authenticate against ssh-agent with
+# the way the URLs are written here (it only tries the literal username
+# `git`, which doesn't match our local agent config). Delegating to the
+# system `git` command lets us use the user's loaded SSH key.
+[net]
+git-fetch-with-cli = true

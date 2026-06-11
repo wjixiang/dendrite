@@ -7,8 +7,7 @@ Domain-agnostic agent runtime. Plug in any `AgentContext` to specialize.
 This crate is published as a single package. Its sibling submodules
 provide shared infrastructure and are pulled in via git:
 
-- `agentik-types` — Shared type definitions (LLM API surface, message types)
-- `agentik-sdk` — LLM provider SDKs (Anthropic, Mimo, etc.)
+- `agentik-sdk` — LLM provider SDKs (Anthropic, Mimo, etc.) — also re-exports the shared type definitions under `agentik_sdk::types`
 
 ## Extension points
 

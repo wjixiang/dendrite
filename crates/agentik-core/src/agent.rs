@@ -12,14 +12,14 @@ use std::{sync::Arc, time::Duration, time::UNIX_EPOCH};
 use crate::context::{AgentContext, serialize_snapshot};
 use crate::message_ext::AgentMessageExt;
 use agentik_sdk::model::model_pool::ModelPool;
-use agentik_types::messages::{ContentBlock, Message, Role};
-use agentik_types::tools::ToolUse;
+use agentik_sdk::types::messages::{ContentBlock, Message, Role};
+use agentik_sdk::types::tools::ToolUse;
 use futures::StreamExt;
 use tracing::{Level, event, span};
 use uuid::Uuid;
 
-use agentik_types::ToolCallResponseContent;
-use agentik_types::{AgentEvent, ToolCallResponse};
+use agentik_sdk::types::ToolCallResponseContent;
+use agentik_sdk::types::{AgentEvent, ToolCallResponse};
 
 use crate::prompt::system_prompt_builder;
 use crate::types::ToolEffect;
@@ -60,7 +60,7 @@ pub struct Agent {
     pub(crate) last_context_version: u64,
     pub(crate) system_prompt_section: Option<String>,
     /// Optional event channel for streaming progress to external observers.
-    pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<agentik_types::AgentUiEvent>>,
+    pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<agentik_sdk::types::AgentUiEvent>>,
     /// Currently selected model name. If None, falls back to round-robin.
     pub(crate) current_model_name: Option<String>,
 }
@@ -71,7 +71,7 @@ impl Agent {
     }
 
     /// Send an event to the optional observation channel.
-    fn send_event(&self, event: agentik_types::AgentUiEvent) {
+    fn send_event(&self, event: agentik_sdk::types::AgentUiEvent) {
         if let Some(tx) = &self.event_tx {
             let _ = tx.send(event);
         }
@@ -144,7 +144,7 @@ impl Agent {
 
     pub async fn start(&mut self) -> Result<(), AgentError> {
         self.lifecycle.set_running();
-        self.send_event(agentik_types::AgentUiEvent::LlmResponse(
+        self.send_event(agentik_sdk::types::AgentUiEvent::LlmResponse(
             "🤖 Agent started".to_string(),
         ));
 
@@ -179,7 +179,7 @@ impl Agent {
                 }
                 Err(e) => {
                     tracing::error!("{}", e.to_string());
-                    self.send_event(agentik_types::AgentUiEvent::Error(format!("{}", e)));
+                    self.send_event(agentik_sdk::types::AgentUiEvent::Error(format!("{}", e)));
                     return Err(AgentError::WorkflowFailed {
                         iteration,
                         error: Box::new(e),
@@ -192,7 +192,7 @@ impl Agent {
             return Err(AgentError::MaxIterations(self.config.max_iterations));
         }
 
-        self.send_event(agentik_types::AgentUiEvent::Done);
+        self.send_event(agentik_sdk::types::AgentUiEvent::Done);
         Ok(())
     }
 
@@ -209,7 +209,7 @@ impl Agent {
         self.inject_context_if_changed().await;
 
         let context = self.build_context().await?;
-        self.send_event(agentik_types::AgentUiEvent::Requesting);
+        self.send_event(agentik_sdk::types::AgentUiEvent::Requesting);
         let response_message = self.request(context).await?;
         event!(Level::INFO, "",);
         let last_usage = response_message.usage.clone().unwrap_or_default();
@@ -218,10 +218,10 @@ impl Agent {
         for block in &response_message.content {
             match block {
                 ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
-                    self.send_event(agentik_types::AgentUiEvent::Thinking(thinking.clone()));
+                    self.send_event(agentik_sdk::types::AgentUiEvent::Thinking(thinking.clone()));
                 }
                 ContentBlock::Text { text } if !text.is_empty() => {
-                    self.send_event(agentik_types::AgentUiEvent::LlmResponse(text.clone()));
+                    self.send_event(agentik_sdk::types::AgentUiEvent::LlmResponse(text.clone()));
                 }
                 _ => {}
             }
@@ -246,7 +246,7 @@ impl Agent {
         }
 
         for tc in &toolcalls {
-            self.send_event(agentik_types::AgentUiEvent::ToolCall {
+            self.send_event(agentik_sdk::types::AgentUiEvent::ToolCall {
                 name: tc.name.clone(),
                 input: tc.input.clone(),
             });
@@ -265,7 +265,7 @@ impl Agent {
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            self.send_event(agentik_types::AgentUiEvent::ToolResult {
+            self.send_event(agentik_sdk::types::AgentUiEvent::ToolResult {
                 ok: !tr.is_error.unwrap_or_default(),
                 content: result_text,
             });
@@ -478,9 +478,9 @@ mod tests {
     use agentik_sdk::model::Model;
     use agentik_sdk::model::model_info::ModelInfo;
     use agentik_sdk::provider::client::MockApiClient;
-    use agentik_types::AgentEvent;
-    use agentik_types::messages::{ContentBlock, Message, Role};
-    use agentik_types::shared::Usage;
+    use agentik_sdk::types::AgentEvent;
+    use agentik_sdk::types::messages::{ContentBlock, Message, Role};
+    use agentik_sdk::types::shared::Usage;
 
     // ── Mock AgentContext ──────────────────────────────────────
 

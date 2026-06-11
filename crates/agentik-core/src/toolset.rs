@@ -5,8 +5,8 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{Value, json};
     use crate::tools::ToolFunction;
-    use agentik_types::ToolEffect;
-    use agentik_types::tools::{ToolBuilder, ToolUse};
+    use agentik_sdk::types::ToolEffect;
+    use agentik_sdk::types::tools::{ToolBuilder, ToolUse};
 
     use super::{ToolRegistration, Toolset};
 

@@ -1,4 +1,4 @@
-use agentik_types::messages::ContentBlock;
+use agentik_sdk::types::messages::ContentBlock;
 
 /// Commands sent to a managed agent's control loop.
 #[derive(Debug)]

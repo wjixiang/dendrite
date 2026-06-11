@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 use agentik_sdk::model::model_pool::ModelPoolError;
-use agentik_types::errors::AnthropicError;
-use agentik_types::tools::ToolUse;
+use agentik_sdk::types::errors::AnthropicError;
+use agentik_sdk::types::tools::ToolUse;
 
 use crate::types::ToolError;
 
@@ -58,7 +58,7 @@ pub enum AgentError {
     MemoryError(#[from] MemoryError),
 
     #[error("Unknown tool requested:  {0:?}. Existed tools: {1:?}")]
-    UnknownTool(Vec<ToolUse>, Vec<agentik_types::Tool>),
+    UnknownTool(Vec<ToolUse>, Vec<agentik_sdk::types::Tool>),
 
     #[error("Tool error: {0}")]
     Tool(#[from] ToolError),

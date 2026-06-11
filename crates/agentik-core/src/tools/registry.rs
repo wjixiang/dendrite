@@ -7,7 +7,7 @@ use tokio::time::timeout;
 
 use super::error::{ToolError, ToolOperationResult};
 use super::function::ToolFunction;
-use agentik_types::{Tool, ToolResult, ToolUse};
+use agentik_sdk::types::{Tool, ToolResult, ToolUse};
 
 /// Registry for managing tool definitions and their implementations.
 ///

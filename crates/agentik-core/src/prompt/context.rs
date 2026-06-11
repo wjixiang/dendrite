@@ -1,4 +1,4 @@
-use agentik_types::Message;
+use agentik_sdk::types::Message;
 
 use crate::message_ext::AgentMessageExt;
 

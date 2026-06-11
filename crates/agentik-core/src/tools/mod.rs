@@ -11,7 +11,7 @@ pub use function::{SimpleTool, ToolFunction};
 pub use registry::{SharedToolRegistry, ToolRegistry};
 pub use toolset::{ToolRegistration, Toolset};
 
-pub use agentik_types::{
+pub use agentik_sdk::types::{
     Tool, ToolBuilder, ToolChoice, ToolEffect, ToolUse, ToolResult, ToolResultContent,
     ToolValidationError,
 };

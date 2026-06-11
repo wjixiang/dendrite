@@ -4,10 +4,10 @@ use tokio::time::timeout;
 
 use super::error::ToolError;
 use super::ToolFunction;
-use agentik_types::Tool as SdkTool;
-use agentik_types::ToolCallResponse;
-use agentik_types::ToolEffect;
-use agentik_types::tools::{ToolResult, ToolUse};
+use agentik_sdk::types::Tool as SdkTool;
+use agentik_sdk::types::ToolCallResponse;
+use agentik_sdk::types::ToolEffect;
+use agentik_sdk::types::tools::{ToolResult, ToolUse};
 
 pub struct ToolRegistration {
     pub definition: SdkTool,

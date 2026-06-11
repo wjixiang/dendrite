@@ -9,10 +9,7 @@ use ratatui::{
 use crate::agent_panel;
 use crate::state::{App, ChatFocus, Panel};
 use crate::theme::Theme;
-
-pub(crate) const SPINNER_FRAMES: &[&str] = &[
-    "\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-];
+use crate::widgets::SPINNER_FRAMES;
 
 /// Maximum height (in visual rows) the embedded sub-agent list can
 /// grow to. The list auto-shrinks to fit, but this caps it so a
