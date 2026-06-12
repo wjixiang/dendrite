@@ -60,7 +60,9 @@ pub fn agent_event_to_messages(event: &AgentEvent) -> Vec<ChatMessage> {
             parsed: serde_json::from_str(content).ok(),
         }],
         AgentEvent::Done => vec![ChatMessage::Done],
-        AgentEvent::Error(msg) => vec![ChatMessage::Error { message: msg.clone() }],
+        AgentEvent::Error(msg) => vec![ChatMessage::Error {
+            message: msg.clone(),
+        }],
         // Streaming noise — handled elsewhere.
         AgentEvent::Requesting
         | AgentEvent::TextDelta(_)
@@ -75,23 +77,17 @@ pub fn agent_event_to_messages(event: &AgentEvent) -> Vec<ChatMessage> {
 
 /// Append a text delta to the last streaming
 /// [`ChatMessage::Assistant`] in the history. If no such message
-/// exists, a new streaming `Assistant` is pushed.
+/// exists (history is empty, or the trailing message is not a
+/// streaming Assistant), a new streaming `Assistant` is pushed.
 ///
 /// Returns `true` if the history was mutated.
 pub fn append_streaming_assistant(history: &mut Vec<ChatMessage>, token: &str) -> bool {
-    for msg in history.iter_mut().rev() {
-        match msg {
-            ChatMessage::Assistant { text, .. } => {
-                text.push_str(token);
-                return true;
-            }
-            // Stop walking the first time we hit a non-Assistant
-            // variant. This mirrors the original kms_tui logic,
-            // which uses `rev().find` and so ignores older
-            // streaming blocks once a non-streaming message has
-            // been pushed.
-            _ => return push_streaming_assistant(history, token),
-        }
+    // We only ever look at the *last* message: streaming deltas
+    // accumulate into the trailing block. Older streaming
+    // blocks, if any exist, are left untouched.
+    if let Some(ChatMessage::Assistant { text, .. }) = history.iter_mut().rev().next() {
+        text.push_str(token);
+        return true;
     }
     push_streaming_assistant(history, token)
 }
@@ -102,14 +98,9 @@ pub fn append_streaming_assistant(history: &mut Vec<ChatMessage>, token: &str) -
 ///
 /// Returns `true` if the history was mutated.
 pub fn append_streaming_thinking(history: &mut Vec<ChatMessage>, token: &str) -> bool {
-    for msg in history.iter_mut().rev() {
-        match msg {
-            ChatMessage::Thinking { text, .. } => {
-                text.push_str(token);
-                return true;
-            }
-            _ => return push_streaming_thinking(history, token),
-        }
+    if let Some(ChatMessage::Thinking { text, .. }) = history.iter_mut().rev().next() {
+        text.push_str(token);
+        return true;
     }
     push_streaming_thinking(history, token)
 }
@@ -136,7 +127,7 @@ fn push_streaming_thinking(history: &mut Vec<ChatMessage>, token: &str) -> bool 
 /// called right before a non-delta event appends a new message
 /// so that a later `█` block cursor doesn't dangle on a message
 /// that just got superseded.
-pub fn finalize_streaming(history: &mut Vec<ChatMessage>) {
+pub fn finalize_streaming(history: &mut [ChatMessage]) {
     for msg in history.iter_mut().rev() {
         match msg {
             ChatMessage::Assistant { streaming, .. } if *streaming => *streaming = false,
@@ -162,15 +153,16 @@ pub fn handle_non_delta_event(history: &mut Vec<ChatMessage>, event: &AgentEvent
             }
             // Try to fold into a trailing streaming Assistant
             // *before* finalizing, so the final text replaces
-            // the in-progress text in place.
-            for msg in history.iter_mut().rev() {
-                match msg {
-                    ChatMessage::Assistant { streaming, text: slot } if *streaming => {
-                        *slot = text.clone();
-                        *streaming = false;
-                        return;
-                    }
-                    _ => break,
+            // the in-progress text in place. We only ever look
+            // at the last message; if it isn't a streaming
+            // Assistant we fall through to push a new one.
+            if let Some(ChatMessage::Assistant { streaming, text: slot }) =
+                history.iter_mut().rev().next()
+            {
+                if *streaming {
+                    *slot = text.clone();
+                    *streaming = false;
+                    return;
                 }
             }
             finalize_streaming(history);
@@ -184,14 +176,13 @@ pub fn handle_non_delta_event(history: &mut Vec<ChatMessage>, event: &AgentEvent
                 finalize_streaming(history);
                 return;
             }
-            for msg in history.iter_mut().rev() {
-                match msg {
-                    ChatMessage::Thinking { streaming, text: slot } if *streaming => {
-                        *slot = text.clone();
-                        *streaming = false;
-                        return;
-                    }
-                    _ => break,
+            if let Some(ChatMessage::Thinking { streaming, text: slot }) =
+                history.iter_mut().rev().next()
+            {
+                if *streaming {
+                    *slot = text.clone();
+                    *streaming = false;
+                    return;
                 }
             }
             finalize_streaming(history);
@@ -298,7 +289,13 @@ mod tests {
             },
         );
         assert_eq!(h.len(), 2);
-        assert!(matches!(h[0], ChatMessage::Assistant { streaming: false, .. }));
+        assert!(matches!(
+            h[0],
+            ChatMessage::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
         assert!(matches!(h[1], ChatMessage::ToolCall { .. }));
     }
 
