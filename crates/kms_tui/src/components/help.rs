@@ -25,7 +25,7 @@ pub fn render_help_bar(theme: &Theme, app: &App) -> Paragraph<'static> {
                 vec![
                     Span::styled(" ...running... ", Style::default().fg(theme.spinner)),
                 ]
-            } else if app.agent_input_active {
+            } else if app.agent_input_active() {
                 vec![
                     Span::styled(" [Enter] Send ", Style::default().fg(theme.help_key)),
                     Span::styled(" [Esc] Cancel ", Style::default().fg(theme.help_key)),

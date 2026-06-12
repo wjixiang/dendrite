@@ -1,4 +1,4 @@
-use crate::chat::ChatMessage;
+use agent_panel_tui::ChatMessage;
 use std::collections::HashMap;
 
 /// Mirror of the relevant slice of `spawn_agent_task`: snapshot

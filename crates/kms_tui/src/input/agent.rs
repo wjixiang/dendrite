@@ -5,7 +5,7 @@ use agent_knowledge::KnowledgeContext;
 use agentik_sdk::types::AgentEvent;
 use agentik_sdk::types::messages::ContentBlock;
 
-use crate::chat::ChatMessage;
+use agent_panel_tui::ChatMessage;
 use crate::state::{AgentKind, App};
 
 use super::paste;
@@ -274,8 +274,7 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
     app.agent_running = true;
     app.agent_requesting = false;
     app.agent_streaming = false;
-    app.agent_auto_scroll = true;
-    app.agent_scroll = 0;
+    app.chat_panel.enable_auto_scroll();
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.agent_event_rx = Some(rx);
@@ -283,10 +282,9 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
     let agent_arc = match app.agents.get(&kind).cloned() {
         Some(arc) => arc,
         None => {
-            if let Some(history) = app.agent_messages_map.get_mut(&kind) {
-                history.pop(); // Divider
-                history.pop(); // User
-            }
+            let history = app.agent_messages_mut();
+            history.pop(); // Divider
+            history.pop(); // User
             app.agent_running = false;
             app.agent_requesting = false;
             app.agent_streaming = false;

@@ -27,41 +27,41 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
         return handle_home(app);
     }
 
-    if app.focused == Panel::Agent && app.agent_input_active && !app.agent_running {
+    if app.focused == Panel::Agent && app.agent_input_active() && !app.agent_running {
         return match key {
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                let input = std::mem::take(&mut app.agent_input);
+                let input = app.take_agent_input();
                 if input.is_empty() {
-                    app.agent_input_active = false;
+                    app.set_agent_input_active(false);
                     Action::None
                 } else {
-                    app.agent_input_active = false;
+                    app.set_agent_input_active(false);
                     Action::SubmitAgent(input)
                 }
             }
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                app.agent_input.clear();
-                app.agent_input_active = false;
+                app.clear_agent_input_text();
+                app.set_agent_input_active(false);
                 Action::None
             }
             KeyEvent {
                 code: KeyCode::Backspace,
                 ..
             } => {
-                app.agent_input.pop();
+                app.pop_input_char();
                 Action::None
             }
             KeyEvent {
                 code: KeyCode::Char(c),
                 ..
             } => {
-                app.agent_input.push(c);
+                app.push_input_char(c);
                 Action::None
             }
             _ => Action::None,
@@ -185,7 +185,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             code: KeyCode::Char('a'),
             modifiers: KeyModifiers::NONE,
             ..
-        } if app.focused == Panel::Agent && !app.agent_input_active && !app.agent_running => {
+        } if app.focused == Panel::Agent && !app.agent_input_active() && !app.agent_running => {
             Action::SwitchAgent
         }
         KeyEvent {
@@ -337,7 +337,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
             modifiers: KeyModifiers::NONE,
             ..
         } if app.focused == Panel::Agent && !app.agent_running => {
-            app.agent_input_active = true;
+            app.set_agent_input_active(true);
             Action::None
         }
         // --- KE panel: toggle knowledge/entity tab ---
@@ -447,8 +447,9 @@ fn handle_page_down(app: &mut App) -> Action {
     match app.focused {
         Panel::Tree => tree_move(app, FULL_PAGE as isize),
         Panel::Agent => {
-            app.agent_auto_scroll = false;
-            app.agent_scroll = app.agent_scroll.saturating_add(FULL_PAGE as u16);
+            app.chat_panel.disable_auto_scroll();
+            app.chat_panel
+                .set_scroll(app.chat_panel.scroll().saturating_add(FULL_PAGE as u16));
             Action::None
         }
         Panel::KnowledgeEntity => {
@@ -473,8 +474,9 @@ fn handle_page_up(app: &mut App) -> Action {
     match app.focused {
         Panel::Tree => tree_move(app, -(FULL_PAGE as isize)),
         Panel::Agent => {
-            app.agent_auto_scroll = false;
-            app.agent_scroll = app.agent_scroll.saturating_sub(FULL_PAGE as u16);
+            app.chat_panel.disable_auto_scroll();
+            app.chat_panel
+                .set_scroll(app.chat_panel.scroll().saturating_sub(FULL_PAGE as u16));
             Action::None
         }
         Panel::KnowledgeEntity => {
@@ -492,8 +494,9 @@ fn handle_half_page_down(app: &mut App) -> Action {
     match app.focused {
         Panel::Tree => tree_move(app, HALF_PAGE as isize),
         Panel::Agent => {
-            app.agent_auto_scroll = false;
-            app.agent_scroll = app.agent_scroll.saturating_add(HALF_PAGE as u16);
+            app.chat_panel.disable_auto_scroll();
+            app.chat_panel
+                .set_scroll(app.chat_panel.scroll().saturating_add(HALF_PAGE as u16));
             Action::None
         }
         Panel::KnowledgeEntity => {
@@ -517,8 +520,9 @@ fn handle_half_page_up(app: &mut App) -> Action {
     match app.focused {
         Panel::Tree => tree_move(app, -(HALF_PAGE as isize)),
         Panel::Agent => {
-            app.agent_auto_scroll = false;
-            app.agent_scroll = app.agent_scroll.saturating_sub(HALF_PAGE as u16);
+            app.chat_panel.disable_auto_scroll();
+            app.chat_panel
+                .set_scroll(app.chat_panel.scroll().saturating_sub(HALF_PAGE as u16));
             Action::None
         }
         Panel::KnowledgeEntity => {
@@ -558,8 +562,9 @@ fn handle_scroll_down(app: &mut App) -> Action {
 }
 
 fn handle_agent_scroll_down(app: &mut App) -> Action {
-    app.agent_auto_scroll = false;
-    app.agent_scroll = app.agent_scroll.saturating_add(1);
+    app.chat_panel.disable_auto_scroll();
+    app.chat_panel
+        .set_scroll(app.chat_panel.scroll().saturating_add(1));
     Action::None
 }
 
@@ -575,8 +580,9 @@ fn handle_scroll_up(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => {
-            app.agent_auto_scroll = false;
-            app.agent_scroll = app.agent_scroll.saturating_sub(1);
+            app.chat_panel.disable_auto_scroll();
+            app.chat_panel
+                .set_scroll(app.chat_panel.scroll().saturating_sub(1));
             Action::None
         }
     }
@@ -599,8 +605,8 @@ fn handle_home(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => {
-            app.agent_auto_scroll = false;
-            app.agent_scroll = 0;
+            app.chat_panel.disable_auto_scroll();
+            app.chat_panel.set_scroll(0);
             Action::None
         }
     }
@@ -626,7 +632,7 @@ fn handle_end(app: &mut App) -> Action {
             Action::None
         }
         Panel::Agent => {
-            app.agent_auto_scroll = true;
+            app.chat_panel.enable_auto_scroll();
             Action::None
         }
     }

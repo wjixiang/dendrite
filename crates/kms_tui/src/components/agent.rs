@@ -9,7 +9,6 @@ use ratatui::{
 use agent_panel_tui as agent_panel;
 use crate::state::{App, ChatFocus, Panel};
 use crate::theme::Theme;
-use crate::widgets::SPINNER_FRAMES;
 
 /// Maximum height (in visual rows) the embedded sub-agent list can
 /// grow to. The list auto-shrinks to fit, but this caps it so a
@@ -48,25 +47,6 @@ fn sub_agent_height_for(agent_count: usize, panel_height: u16) -> u16 {
     let bounded_max = max_for_sub.max(SUB_AGENT_PANEL_MIN_HEIGHT);
 
     want.clamp(SUB_AGENT_PANEL_MIN_HEIGHT, bounded_max.max(SUB_AGENT_PANEL_MIN_HEIGHT))
-}
-
-/// Cap the user-driven `agent_scroll` at the actual history bottom
-/// and return the row that should be displayed this frame.
-///
-/// Two responsibilities:
-///   * Auto-scroll → always returns `max_scroll` (pin to bottom).
-///   * Manual scroll → returns `min(agent_scroll, max_scroll)` so
-///     the stored value never drifts past the real history end.
-///
-/// The caller writes the result back to `app.agent_scroll`. That
-/// writeback lets `j`/`k` from auto-scroll pick up at the bottom
-/// instead of jumping to the top from a stale `agent_scroll = 0`.
-fn resolve_global_scroll(agent_scroll: u16, auto_scroll: bool, max_scroll: usize) -> usize {
-    if auto_scroll {
-        max_scroll
-    } else {
-        (agent_scroll as usize).min(max_scroll)
-    }
 }
 
 /// Main function of Agent message rendering
@@ -134,12 +114,21 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         (chunks[0], None, chunks[1])
     };
 
-    let inner_height = messages_area.height.saturating_sub(2) as usize;
-    let inner_width = messages_area.width.saturating_sub(2) as u16;
+    // Build the chat panel's outer `Block` (border + title). The
+    // chat renderer draws a bare `Paragraph` into the area *inside*
+    // this block — it does not draw the block itself, matching the
+    // contract of `render_agent_panel` for the sub-agent list.
+    let conv_block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme.focused_border_style(app.focused == Panel::Agent));
 
-    let (rendered_lines, scroll_y): (Vec<Line<'static>>, u16) = if app.providers.is_empty() {
-        // Empty-pool first-run hint instead of the normal chat history.
-        let lines = vec![
+    if app.providers.is_empty() {
+        // Empty-pool first-run hint instead of the normal chat
+        // history. Render it as a `Paragraph` *inside* the
+        // `conv_block` so the border, title, and focused style all
+        // match the normal chat path.
+        let hint_lines = vec![
             Line::from(Span::styled(
                 "  No LLM providers configured.",
                 Style::default()
@@ -191,75 +180,20 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 Style::default().fg(theme.text_muted),
             )),
         ];
-        (lines, 0)
+        f.render_widget(conv_block.clone(), messages_area);
+        let conv = Paragraph::new(hint_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((0, 0));
+        f.render_widget(conv, conv_block.inner(messages_area));
     } else {
-        let msg_version = app.message_version;
-
-        // --- Flatten the full chat history into a Vec<Line> ---
-        //
-        // No more message-window culling: we always render the whole
-        // history, then ask Paragraph itself how tall it ends up.
-        // This eliminates the "estimate wrap, then translate" step
-        // that was the source of the unit-mismatch bug.
-        let cache_hit = matches!(
-            &app.cached_agent_lines,
-            Some((ver, _lines)) if *ver == msg_version
-        );
-        let lines: Vec<Line<'static>> = if cache_hit {
-            app.cached_agent_lines.as_ref().unwrap().1.clone()
-        } else {
-            let lines: Vec<Line<'static>> = app
-                .agent_messages()
-                .iter()
-                .flat_map(|m| m.to_lines(theme))
-                .collect();
-            app.cached_agent_lines = Some((msg_version, lines.clone()));
-            lines
-        };
-
-        // --- Get the *exact* post-wrap visual row count ---
-        //
-        // `Paragraph::line_count(width)` walks the same `WordWrapper`
-        // the renderer uses, so the number it returns is the number
-        // of visual rows the user will actually see — no char-based
-        // upper bound, no per-message rollup, no approximation. We
-        // cache it on `(msg_version, inner_width)` so a stable frame
-        // skips the second `WordWrapper` pass (one for `line_count`,
-        // one for `render`).
-        let total_visual_rows: usize = match &app.cached_estimates {
-            Some((ver, w, rows)) if *ver == msg_version && *w == inner_width => *rows,
-            _ => {
-                let probe = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
-                let rows = probe.line_count(inner_width);
-                app.cached_estimates = Some((msg_version, inner_width, rows));
-                rows
-            }
-        };
-
-        // --- Clamp `agent_scroll` to the real history bottom ---
-        //
-        // Both operands are visual rows (Paragraph's native unit), so
-        // the subtraction is exact. `max_scroll` is the largest valid
-        // value for `Paragraph::scroll.y`; passing it makes the last
-        // visual row visible at the bottom of the panel.
-        let max_scroll = total_visual_rows.saturating_sub(inner_height);
-        let global_scroll =
-            resolve_global_scroll(app.agent_scroll, app.agent_auto_scroll, max_scroll);
-        app.agent_scroll = (global_scroll.min(u16::MAX as usize)) as u16;
-
-        (lines, app.agent_scroll)
-    };
-
-    let conv_block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(theme.focused_border_style(app.focused == Panel::Agent));
-
-    let conv = Paragraph::new(rendered_lines)
-        .block(conv_block)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_y, 0));
-    f.render_widget(conv, messages_area);
+        // Normal chat path: hand the chat panel's renderer the
+        // *inner* area (inside the block) so its wrap/scroll math
+        // uses the same unit as the rendered `Paragraph`.
+        f.render_widget(conv_block.clone(), messages_area);
+        let chat_inner = conv_block.inner(messages_area);
+        let chat_theme: &dyn agent_panel_tui::ChatPanelTheme = &*app.chat_panel_theme;
+        agent_panel::render_chat_panel(f, &mut app.chat_panel, chat_theme, chat_inner);
+    }
 
     // --- Embedded sub-agent list ---------------------------------------
     //
@@ -329,98 +263,54 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
         }
     }
 
-    let status_line = if app.providers.is_empty() {
-        // No providers — no input, just the hint to open settings.
-        Line::from(vec![Span::styled(
-            "  [s] open settings  \u{2022}  [q] quit",
-            Style::default().fg(theme.text_muted),
-        )])
+    // ---- Bottom input / status row ----
+    //
+    // The four-state status line (empty-pool hint / running
+    // spinner / active input prompt / idle hint) is owned by
+    // `agent_panel_tui::render_chat_input`. We just translate
+    // the host's runtime state into the `ChatInputStatus` enum
+    // and let the renderer do the rest.
+    let input_status = if app.providers.is_empty() {
+        agent_panel_tui::ChatInputStatus::EmptyProviders
     } else if app.agent_running {
-        let spinner_char = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
-        let usage_suffix = match app.agent_usage_tokens {
-            Some(tokens) => format!(" ({} tokens)", tokens),
-            None => String::new(),
-        };
-        // Phase label: the spinner keeps rotating across all three
-        // (driven by `agent_running` in input.rs), but the suffix
-        // tells the user *which* phase is active right now.
-        let phase = if app.agent_streaming {
-            "streaming"
-        } else if app.agent_requesting {
-            "requesting"
-        } else {
-            "running"
-        };
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(spinner_char.to_string(), Style::default().fg(theme.spinner)),
-            Span::styled(
-                format!(" Agent [{}] {}{} ", kind_label, phase, usage_suffix),
-                Style::default().fg(theme.spinner),
-            ),
-        ])
-    } else if app.agent_input_active {
-        Line::from(vec![Span::raw(format!("> {}", app.agent_input))])
+        agent_panel_tui::ChatInputStatus::Running {
+            phase: if app.agent_streaming {
+                agent_panel_tui::RunningPhase::Streaming
+            } else if app.agent_requesting {
+                agent_panel_tui::RunningPhase::Requesting
+            } else {
+                agent_panel_tui::RunningPhase::Running
+            },
+            tokens: app.agent_usage_tokens,
+        }
+    } else if app.agent_input_active() {
+        agent_panel_tui::ChatInputStatus::InputActive
     } else {
-        Line::from(vec![
-            Span::styled(
-                format!("  (Enter to type) [{}] ", kind_label),
-                Style::default().fg(theme.text_muted),
-            ),
-            Span::styled("[a] switch", Style::default().fg(theme.text_muted)),
-        ])
+        agent_panel_tui::ChatInputStatus::Idle
     };
-
-    let input_bg = if app.agent_input_active {
-        theme.input_bg
-    } else {
-        ratatui::style::Color::Black
-    };
-    let input_line = Paragraph::new(status_line).style(Style::default().bg(input_bg));
-    f.render_widget(input_line, status_area);
-
-    if app.agent_input_active && app.focused == Panel::Agent && !app.providers.is_empty() {
-        let cursor_x = status_area.x + 2 + app.agent_input.len() as u16;
-        let cursor_y = status_area.y;
-        f.set_cursor_position((cursor_x, cursor_y));
-    }
+    let kind_label = app.agent_kind.label();
+    let focused = app.focused == Panel::Agent;
+    // The chat input has its own theme box (see
+    // `App::chat_input_theme`). Both `chat_panel_theme` and
+    // `chat_input_theme` wrap the same `KmsChatThemeBridge`
+    // value, but they're separate `Box<dyn Trait>` instances
+    // because the two traits are different.
+    let input_theme: &dyn agent_panel_tui::ChatInputTheme = &*app.chat_input_theme;
+    agent_panel::render_chat_input(
+        f,
+        &mut app.chat_panel,
+        &input_status,
+        kind_label,
+        app.spinner_tick,
+        input_theme,
+        status_area,
+        focused,
+    );
 }
 
 #[cfg(test)]
 mod scroll_tests {
     use super::*;
-
-    // ---- resolve_global_scroll ----
-
-    #[test]
-    fn resolve_auto_scroll_pins_to_max() {
-        // Auto-scroll ignores `agent_scroll` and returns `max_scroll`
-        // so the bottom row is always visible while streaming.
-        assert_eq!(resolve_global_scroll(0, true, 100), 100);
-        assert_eq!(resolve_global_scroll(42, true, 100), 100);
-        assert_eq!(resolve_global_scroll(999, true, 100), 100);
-    }
-
-    #[test]
-    fn resolve_manual_scroll_clamps_to_max() {
-        // Manual scroll respects `agent_scroll` but never lets it
-        // exceed the real history end.
-        assert_eq!(resolve_global_scroll(0, false, 100), 0);
-        assert_eq!(resolve_global_scroll(50, false, 100), 50);
-        assert_eq!(resolve_global_scroll(100, false, 100), 100);
-        assert_eq!(resolve_global_scroll(101, false, 100), 100);
-        assert_eq!(resolve_global_scroll(u16::MAX, false, 100), 100);
-    }
-
-    #[test]
-    fn resolve_max_scroll_zero_always_returns_zero() {
-        // Empty / shorter-than-viewport content: max is 0 and both
-        // modes must land at 0.
-        assert_eq!(resolve_global_scroll(0, true, 0), 0);
-        assert_eq!(resolve_global_scroll(5, true, 0), 0);
-        assert_eq!(resolve_global_scroll(0, false, 0), 0);
-        assert_eq!(resolve_global_scroll(5, false, 0), 0);
-    }
 
     // ---- Paragraph::line_count unit-symmetry regression ----
     //

@@ -1,5 +1,4 @@
 mod agent;
-mod events;
 mod keys;
 mod paste;
 #[cfg(test)]
@@ -22,13 +21,15 @@ use crate::widgets::ui;
 use crate::CrosstermBackend;
 use crate::settings::save_settings;
 
+use agent_panel_tui::chat::events as chat_events;
+
 pub async fn run_app(
     terminal: &mut Terminal<CrosstermBackend>,
     app: &mut App,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let mut pending_refresh = false;
-        let old_version = app.message_version;
+        let old_version = app.chat_panel.message_version();
 
         // Collect all pending events from the agent channel.
         let agent_events: Vec<AgentEvent> = if let Some(rx) = &mut app.agent_event_rx {
@@ -48,10 +49,9 @@ pub async fn run_app(
             had_events = true;
             match event {
                 AgentEvent::Done => {
-                    let kind = app.agent_kind;
-                    let history = app.agent_messages_map.get_mut(&kind).unwrap();
-                    events::finalize_streaming_history(history);
-                    history.push(crate::chat::ChatMessage::Done);
+                    let history = app.agent_messages_mut();
+                    chat_events::finalize_streaming(history);
+                    history.push(agent_panel_tui::ChatMessage::Done);
                     app.agent_running = false;
                     app.agent_requesting = false;
                     app.agent_streaming = false;
@@ -66,13 +66,13 @@ pub async fn run_app(
                 AgentEvent::TextDelta(token) => {
                     app.agent_requesting = false;
                     app.agent_streaming = true;
-                    events::append_to_streaming_assistant(app, &token);
+                    chat_events::append_streaming_assistant(app.agent_messages_mut(), &token);
                     app.bump_message_version();
                 }
                 AgentEvent::ThinkingDelta(token) => {
                     app.agent_requesting = false;
                     app.agent_streaming = true;
-                    events::append_to_streaming_thinking(app, &token);
+                    chat_events::append_streaming_thinking(app.agent_messages_mut(), &token);
                     app.bump_message_version();
                 }
                 AgentEvent::UsageUpdate { output_tokens, .. } => {
@@ -90,7 +90,7 @@ pub async fn run_app(
                 event @ AgentEvent::ToolResult { .. } => {
                     app.agent_requesting = false;
                     app.agent_streaming = false;
-                    events::handle_final_event(app, event);
+                    chat_events::handle_non_delta_event(app.agent_messages_mut(), &event);
                     app.bump_message_version();
                     pending_refresh = true;
                 }
@@ -99,13 +99,13 @@ pub async fn run_app(
                     // so the user knows the agent is still working.
                     app.agent_requesting = true;
                     app.agent_streaming = false;
-                    events::handle_final_event(app, event);
+                    chat_events::handle_non_delta_event(app.agent_messages_mut(), &event);
                     app.bump_message_version();
                 }
                 event => {
                     app.agent_requesting = false;
                     app.agent_streaming = false;
-                    events::handle_final_event(app, event);
+                    chat_events::handle_non_delta_event(app.agent_messages_mut(), &event);
                     app.bump_message_version();
                 }
             }
@@ -160,7 +160,7 @@ pub async fn run_app(
         }
 
         // Mark dirty if any events arrived or messages changed.
-        if had_events || had_process_events || app.message_version != old_version {
+        if had_events || had_process_events || app.chat_panel.message_version() != old_version {
             app.needs_render = true;
         }
 
@@ -446,7 +446,7 @@ pub async fn run_app(
                     }
                     Event::Paste(s)
                         if app.focused == Panel::Agent
-                            && app.agent_input_active
+                            && app.agent_input_active()
                             && !app.agent_running =>
                     {
                         had_input = true;
@@ -457,9 +457,9 @@ pub async fn run_app(
                                 content: Some(s),
                                 doc_id: None,
                             });
-                            app.agent_input.push_str(&placeholder);
+                            app.agent_input_mut().push_str(&placeholder);
                         } else {
-                            app.agent_input.push_str(&s);
+                            app.agent_input_mut().push_str(&s);
                         }
                     }
                     _ => {}

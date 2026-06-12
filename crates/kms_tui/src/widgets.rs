@@ -4,14 +4,6 @@ use crate::components;
 use crate::layout;
 use crate::state::App;
 
-/// Braille-pattern spinner frames used by both the Agent panel's
-/// status bar (`components::agent`) and the per-row indicator on
-/// running sub-agents (`agent_panel::renderer`). Indexed by
-/// `App::spinner_tick`.
-pub(crate) const SPINNER_FRAMES: &[&str] = &[
-    "\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-];
-
 pub fn ui(f: &mut Frame, app: &mut App) {
     let app_layout = layout::compute(f.area());
     let theme = app.theme;

@@ -6,10 +6,12 @@ use ratatui::text::Line;
 use ratatui::widgets::{ListItem, ListState};
 use tokio::sync::mpsc;
 
-use agent_panel_tui::{AgentPanelState, AgentPanelTheme, AgentPanelTools, DefaultAgentPanelTools};
+use agent_panel_tui::{
+    AgentPanelState, AgentPanelTheme, AgentPanelTools, ChatPanelState, ChatPanelTheme,
+    DefaultAgentPanelTools,
+};
 
 use crate::theme::Theme;
-use crate::chat::ChatMessage;
 use crate::components::toast::ToastManager;
 use crate::settings::{PoolEntry, ProviderConfig};
 use uuid::Uuid;
@@ -285,7 +287,19 @@ pub struct App {
 
     pub agents: HashMap<AgentKind, Arc<tokio::sync::Mutex<agentik_core::Agent>>>,
     pub agent_kind: AgentKind,
-    pub agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>>,
+    /// Chat panel state — one independent message history per
+    /// `AgentKind`, plus scroll/auto-scroll and the two-level
+    /// render cache. Owned by `agent_panel_tui`; the host reads
+    /// and writes it through thin accessors below.
+    pub chat_panel: ChatPanelState<AgentKind>,
+    /// Theme bridge for the chat panel. Wraps the host's `Theme`
+    /// so the panel sees a stable `&dyn ChatPanelTheme` surface.
+    pub chat_panel_theme: Box<dyn ChatPanelTheme>,
+    /// Theme bridge for the chat input / status row. A separate
+    /// `Box` so the two trait objects can be passed to two
+    /// different renderers without an unsafe cast. Both boxes
+    /// wrap the same `KmsChatThemeBridge` value.
+    pub chat_input_theme: Box<dyn agent_panel_tui::ChatInputTheme>,
     pub agent_event_rx: Option<mpsc::UnboundedReceiver<agentik_sdk::types::AgentEvent>>,
     pub agent_running: bool,
     pub agent_requesting: bool,
@@ -299,28 +313,13 @@ pub struct App {
     /// streaming. Displayed in the status bar so the user sees how
     /// many tokens the LLM has generated so far.
     pub agent_usage_tokens: Option<u64>,
-    /// Vertical scroll offset (in **post-wrap visual rows**) for the
-    /// Agent chat panel. 0 = top. Used together with
-    /// `agent_auto_scroll`: when auto-scroll is on, the renderer
-    /// pins the scroll to the bottom on every frame so newly-streamed
-    /// events stay visible without the user having to scroll.
-    /// Manual `j`/`k`/`PageUp`/`PageDown` flips auto-scroll off and
-    /// lets the user browse history. The unit is post-wrap visual
-    /// rows (not pre-wrap source `Line`s) so it matches the unit
-    /// `Paragraph::scroll.y` consumes.
-    pub agent_scroll: u16,
-    /// True when the chat panel should follow the bottom of the
-    /// stream. Disabled the moment the user scrolls up, re-enabled
-    /// when they hit `End` to jump to the bottom or start a new
-    /// submission.
-    pub agent_auto_scroll: bool,
-
-    pub agent_input: String,
-    pub agent_input_active: bool,
 
     /// Side-channel for paste entries. Each entry either holds the
     /// full text (to be ingested as a document at submit time) or has
-    /// already been uploaded (content=None, doc_id=Some).
+    /// already been uploaded (content=None, doc_id=Some). The
+    /// placeholder text of each entry is what gets pushed into the
+    /// chat panel's input buffer; the actual content is consumed at
+    /// submit time by `spawn_agent_task`.
     pub agent_pastes: Vec<PasteEntry>,
 
     /// Singleton ProcessManager that manages all sub-agents spawned
@@ -377,34 +376,6 @@ pub struct App {
     /// `terminal.draw()`.
     pub needs_render: bool,
 
-    /// Monotonic version counter for the current agent kind's message
-    /// history. Incremented whenever a message is added, its text is
-    /// appended to during streaming, or the user switches agent kinds.
-    pub message_version: u64,
-
-    /// Cached rendered lines for the agent chat panel.
-    /// `(message_version, lines)`. Avoids re-running `to_lines()` on
-    /// every frame when messages haven't changed. The renderer now
-    /// always flattens the full history (no message-window culling),
-    /// so the start/end indices are no longer needed in the key.
-    pub cached_agent_lines: Option<(u64, Vec<Line<'static>>)>,
-
-    /// Cached total post-wrap visual row count for the agent chat
-    /// panel: `(message_version, inner_width_u16, total_visual_rows)`.
-    ///
-    /// This is the exact value `Paragraph::line_count(width)` would
-    /// return when called on the full history. Caching it avoids
-    /// walking `WordWrapper` twice per frame (once for counting, once
-    /// for rendering) — the count result is identical in both passes.
-    ///
-    /// Invalidates on a new `message_version` (history changed) or
-    /// a different `inner_width` (panel resize), since wrap layout
-    /// depends on viewport width. The renderer uses this to compute
-    /// `max_scroll = total_visual_rows.saturating_sub(inner_height)`
-    /// so the auto-scroll pin and the user-driven `j`/`k` scroll
-    /// both bottom out at the actual last visible row.
-    pub cached_estimates: Option<(u64, u16, usize)>,
-
     /// Pending key for two-key vim motions (e.g. `gg` = first `g`
     /// sets this, second `g` consumes it and jumps to top).
     pub pending_key: Option<char>,
@@ -443,13 +414,10 @@ impl App {
             })
             .unwrap_or(0);
 
-        let agent_messages_map: HashMap<AgentKind, Vec<ChatMessage>> = {
-            let mut m = HashMap::new();
-            m.insert(AgentKind::Compose, vec![ChatMessage::Divider]);
-            m.insert(AgentKind::Knowledge, vec![ChatMessage::Divider]);
-            m.insert(AgentKind::Parallel, vec![ChatMessage::Divider]);
-            m
-        };
+        let mut chat_panel = ChatPanelState::new(AgentKind::Compose);
+        chat_panel.insert_history(AgentKind::Compose, vec![agent_panel_tui::ChatMessage::Divider]);
+        chat_panel.insert_history(AgentKind::Knowledge, vec![agent_panel_tui::ChatMessage::Divider]);
+        chat_panel.insert_history(AgentKind::Parallel, vec![agent_panel_tui::ChatMessage::Divider]);
 
         let process_event_rx = process_manager.events();
 
@@ -471,19 +439,15 @@ impl App {
             ke_scroll: 0,
             agents,
             agent_kind: AgentKind::Compose,
-            agent_messages_map,
+            chat_panel,
+            chat_panel_theme: Box::new(KmsChatThemeBridge(Theme::default_theme())),
+            chat_input_theme: Box::new(KmsChatThemeBridge(Theme::default_theme())),
             agent_event_rx: None,
             agent_running: false,
             agent_requesting: false,
             agent_streaming: false,
             spinner_tick: 0,
             agent_usage_tokens: None,
-            agent_scroll: 0,
-            // Start with auto-scroll on so the first agent run streams
-            // smoothly; the renderer will pin the scroll to the bottom.
-            agent_auto_scroll: true,
-            agent_input: String::new(),
-            agent_input_active: false,
             agent_pastes: Vec::new(), // PasteEntry
             process_manager,
             process_event_rx: Some(process_event_rx),
@@ -503,25 +467,83 @@ impl App {
             pool_entries,
             new_provider_form: None,
             needs_render: true,
-            message_version: 0,
-            cached_agent_lines: None,
-            cached_estimates: None,
             pending_key: None,
         }
     }
 
-    pub fn agent_messages(&self) -> &[ChatMessage] {
-        &self.agent_messages_map[&self.agent_kind]
-    }
+    // ---- Chat panel accessors ----
+    //
+    // The chat panel state is owned by `agent_panel_tui`. The host
+    // (this struct) exposes thin accessors so call sites in
+    // `input.rs`, `input/keys.rs`, `input/agent.rs`, and
+    // `components/agent.rs` don't have to reach into the field
+    // directly. The delegation is one-liner and keeps the diff to
+    // the rest of the codebase minimal.
 
-    pub fn agent_messages_mut(&mut self) -> &mut Vec<ChatMessage> {
-        self.agent_messages_map.get_mut(&self.agent_kind).unwrap()
+    /// Mutably borrow the current agent kind's chat history.
+    pub fn agent_messages_mut(&mut self) -> &mut Vec<agent_panel_tui::ChatMessage> {
+        self.chat_panel.current_messages_mut()
     }
 
     /// Increment the message version counter, invalidating all
-    /// message-related caches.
+    /// message-related caches in the chat panel.
     pub fn bump_message_version(&mut self) {
-        self.message_version = self.message_version.wrapping_add(1);
+        self.chat_panel.bump_version();
+    }
+
+    // ---- Input accessors ----
+    //
+    // The input text buffer and activation flag live inside
+    // `ChatPanelState`. These accessors keep the existing call
+    // sites (`app.agent_input`, `app.agent_input_active`,
+    // etc.) working without forcing every key handler to know
+    // about the chat panel.
+
+    /// Borrow the current input text.
+    pub fn agent_input(&self) -> &str {
+        self.chat_panel.input_text()
+    }
+
+    /// Mutably borrow the current input text. Callers that
+    /// intend to modify it should prefer the typed helpers
+    /// (`push_input_char`, `pop_input_char`, etc.) so the
+    /// input version is bumped automatically. This raw
+    /// accessor is for callers that need `push_str` (paste
+    /// handling).
+    pub fn agent_input_mut(&mut self) -> &mut String {
+        self.chat_panel.input_text_mut()
+    }
+
+    /// `true` when the user is in input mode.
+    pub fn agent_input_active(&self) -> bool {
+        self.chat_panel.input_active()
+    }
+
+    /// Set the input-mode flag.
+    pub fn set_agent_input_active(&mut self, v: bool) {
+        self.chat_panel.set_input_active(v);
+    }
+
+    /// Consume the input text and return it, leaving the buffer
+    /// empty. Used on Enter to hand the text to the submit
+    /// pipeline.
+    pub fn take_agent_input(&mut self) -> String {
+        self.chat_panel.take_input_text()
+    }
+
+    /// Clear the input text but keep the input-mode flag as-is.
+    pub fn clear_agent_input_text(&mut self) {
+        self.chat_panel.clear_input_text();
+    }
+
+    /// Append a single typed character.
+    pub fn push_input_char(&mut self, c: char) {
+        self.chat_panel.push_input_char(c);
+    }
+
+    /// Pop the last typed character. No-op if the input is empty.
+    pub fn pop_input_char(&mut self) {
+        self.chat_panel.pop_input_char();
     }
 
     /// Check whether the (provider_id, model) pair is in the current pool.
@@ -787,5 +809,96 @@ impl AgentPanelTheme for KmsThemeBridge {
     }
     fn tool_call_bold_style(&self) -> ratatui::style::Style {
         self.0.tool_call_bold_style()
+    }
+}
+
+/// Bridges `kms_tui::Theme` to `agent_panel_tui::ChatPanelTheme`.
+///
+/// Mirrors `KmsThemeBridge` for the chat panel: every method is a
+/// one-line forward to the corresponding field or helper on the
+/// wrapped `Theme`. A different host would write a similar bridge
+/// for its own theme struct (or fall back to
+/// `DefaultChatPanelTheme` from `agent_panel_tui`).
+#[derive(Debug, Clone, Copy)]
+pub struct KmsChatThemeBridge(pub Theme);
+
+impl ChatPanelTheme for KmsChatThemeBridge {
+    fn text_primary(&self) -> ratatui::style::Color {
+        self.0.text_primary
+    }
+    fn text_secondary(&self) -> ratatui::style::Color {
+        self.0.text_secondary
+    }
+    fn text_muted(&self) -> ratatui::style::Color {
+        self.0.text_muted
+    }
+    fn spinner_color(&self) -> ratatui::style::Color {
+        self.0.spinner
+    }
+    fn tool_ok(&self) -> ratatui::style::Color {
+        self.0.tool_ok
+    }
+    fn tool_err(&self) -> ratatui::style::Color {
+        self.0.tool_err
+    }
+    fn user_style(&self) -> ratatui::style::Style {
+        self.0.user_style()
+    }
+    fn assistant_style(&self) -> ratatui::style::Style {
+        self.0.assistant_style()
+    }
+    fn thinking_style(&self) -> ratatui::style::Style {
+        self.0.thinking_style()
+    }
+    fn thinking_bold_style(&self) -> ratatui::style::Style {
+        self.0.thinking_bold_style()
+    }
+    fn tool_call_style(&self) -> ratatui::style::Style {
+        self.0.tool_call_style()
+    }
+    fn tool_call_bold_style(&self) -> ratatui::style::Style {
+        self.0.tool_call_bold_style()
+    }
+    fn success_style(&self) -> ratatui::style::Style {
+        self.0.success_style()
+    }
+    fn user_prefix(&self) -> &'static str {
+        self.0.user_prefix
+    }
+    fn assistant_prefix(&self) -> &'static str {
+        self.0.assistant_prefix
+    }
+    fn thinking_prefix(&self) -> &'static str {
+        self.0.thinking_prefix
+    }
+    fn tool_prefix(&self) -> &'static str {
+        self.0.tool_prefix
+    }
+    fn tool_ok_prefix(&self) -> &'static str {
+        self.0.tool_ok_prefix
+    }
+    fn tool_err_prefix(&self) -> &'static str {
+        self.0.tool_err_prefix
+    }
+    fn done_prefix(&self) -> &'static str {
+        self.0.done_prefix
+    }
+    fn error_prefix(&self) -> &'static str {
+        self.0.error_prefix
+    }
+}
+
+/// Implements [`agent_panel_tui::ChatInputTheme`] on the same
+/// bridge struct so the host doesn't need a second wrapper for
+/// the input row.
+impl agent_panel_tui::ChatInputTheme for KmsChatThemeBridge {
+    fn text_muted(&self) -> ratatui::style::Color {
+        self.0.text_muted
+    }
+    fn spinner_color(&self) -> ratatui::style::Color {
+        self.0.spinner
+    }
+    fn input_bg(&self) -> ratatui::style::Color {
+        self.0.input_bg
     }
 }
