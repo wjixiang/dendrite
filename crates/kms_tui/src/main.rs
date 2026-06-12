@@ -1,4 +1,3 @@
-mod agent_panel;
 mod chat;
 mod components;
 mod input;

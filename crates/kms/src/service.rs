@@ -6,6 +6,23 @@ use uuid::Uuid;
 use crate::Storage;
 use crate::language::Language;
 use crate::storage::types::{Entity, Index, Knowledge, KnowledgeType, Nomenclature, TargetType};
+use serde::Serialize;
+
+/// Outcome of a [`KmsService::move_children`] call. Returned alongside
+/// the rendered location so the tool layer can echo a structured
+/// result to the agent (the agent can then act on `group_created` to
+/// know whether the destination group was a fresh container or an
+/// already-existing one it just appended to).
+#[derive(Debug, Clone, Serialize)]
+pub struct MoveChildrenResult {
+    /// Rendered location string pointing at the destination group.
+    pub location: String,
+    /// UUID of the destination group (whether newly created or reused).
+    pub new_group_id: Uuid,
+    /// `true` if a fresh group was created, `false` if an existing
+    /// `Group`-typed child with the same title was reused.
+    pub group_created: bool,
+}
 use crate::view::{IndexView, LocalView, SUBTREE_TITLES_LIMIT};
 
 use crate::Diagnostic;
@@ -425,6 +442,29 @@ impl KmsService {
             .await
             .map_err(|e| e.to_string())?;
 
+        // Enforce unique child titles within the same parent. The tree's
+        // navigation rules already disambiguate paths by sequence, so a
+        // duplicate title would silently shadow one of the siblings and
+        // break every title-based lookup (`find_by_title`, `resolve_index`,
+        // `navigate`, `move_index`, ...). Reject at creation time so the
+        // tree stays self-consistent.
+        if let Some(new_title) = title.as_deref() {
+            if let Some(conflict) = siblings
+                .iter()
+                .find(|c| c.title.as_deref() == Some(new_title))
+            {
+                let parent_label = parent
+                    .title
+                    .as_deref()
+                    .unwrap_or("(unnamed parent)");
+                return Err(format!(
+                    "duplicate child title '{new_title}' under parent '{parent_label}' \
+                     (conflicts with existing index {})",
+                    conflict.id
+                ));
+            }
+        }
+
         let id = Uuid::new_v4();
         let entry = Index {
             id,
@@ -603,19 +643,57 @@ impl KmsService {
             return Err("cannot delete root index".into());
         }
 
-        // Reparent children to the deleted node's parent
+        // Refuse to delete a knowledge-linked index — that would silently
+        // orphan the targeted Knowledge row (still present in `knowledges`,
+        // no longer surfaced anywhere in the tree). The caller must either
+        // delete the Knowledge itself via `kms_delete_knowledge` (which
+        // downgrades the mount), or explicitly detach via
+        // `kms_detach_knowledge` if they want to remount it elsewhere.
+        if idx.target_type == TargetType::Knowledge {
+            return Err(format!(
+                "index '{title}' is a knowledge mount (target_type=knowledge); \
+                 refusing to delete it because that would leave the Knowledge \
+                 orphaned in the database. Use `kms_delete_knowledge` to remove \
+                 the Knowledge itself, or `kms_detach_knowledge` to temporarily \
+                 unmount it (you must re-link it before the session ends)."
+            ));
+        }
+
+        // Refuse to delete a non-empty group — the caller must explicitly
+        // move or delete the children first. The old behaviour reparented
+        // children to the grandparent, which silently moved them out of
+        // the structure the caller had organised; that lost intent every
+        // time it ran. Force the cleanup to be explicit instead.
         let children = self
             .storage
             .index
             .children_of(Some(idx.id))
             .await
             .map_err(|e| e.to_string())?;
-        for (i, child) in children.iter().enumerate() {
-            self.storage
-                .index
-                .reparent(child.id, idx.parent_id.unwrap(), i as i64)
-                .await
-                .map_err(|e| e.to_string())?;
+        if !children.is_empty() {
+            let preview: Vec<String> = children
+                .iter()
+                .take(5)
+                .map(|c| {
+                    c.title
+                        .clone()
+                        .unwrap_or_else(|| "(unnamed)".to_string())
+                })
+                .collect();
+            let suffix = if children.len() > preview.len() {
+                format!(", …({} more)", children.len() - preview.len())
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "index '{title}' is not empty ({n} child(ren): {preview}{suffix}). \
+                 Refusing to delete a non-empty index because reparenting children \
+                 would silently lose your structure. Move them first with \
+                 `kms_move_children` / `kms_move_index`, delete them with \
+                 `kms_delete_index` / `kms_delete_knowledge`, then retry.",
+                n = children.len(),
+                preview = preview.join(", "),
+            ));
         }
 
         self.storage
@@ -633,6 +711,83 @@ impl KmsService {
         }
 
         Ok(())
+    }
+
+    /// Detach a knowledge-linked Index node (the "mount point" through
+    /// which a Knowledge is reachable in the tree), deleting only the
+    /// Index row and leaving the Knowledge as an explicit orphan.
+    ///
+    /// **Callers MUST re-link the orphan** before the session ends via
+    /// `kms_link_orphans` (or `kms_create_index` with
+    /// `target_type=knowledge`) — otherwise the Knowledge sits in the
+    /// `knowledges` table with no surface in the tree.
+    ///
+    /// Refuses if:
+    ///  * no Index with that title exists;
+    ///  * the Index is not a knowledge mount (`target_type != Knowledge`);
+    ///  * the Index has children (shouldn't normally happen for a
+    ///    knowledge mount, but we refuse defensively).
+    pub async fn detach_knowledge_index(&self, title: &str) -> Result<Uuid, String> {
+        let idx = self
+            .storage
+            .index
+            .find_by_title(title)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("index '{}' not found", title))?;
+
+        if idx.parent_id.is_none() {
+            return Err("cannot detach the root index".into());
+        }
+
+        if idx.target_type != TargetType::Knowledge {
+            return Err(format!(
+                "index '{title}' is a Group, not a knowledge mount; \
+                 nothing to detach. Use `kms_delete_index` instead."
+            ));
+        }
+
+        let knowledge_id = idx.target.ok_or_else(|| {
+            format!(
+                "index '{title}' is marked as knowledge-typed but has no target; \
+                 this is a data inconsistency, investigate before retrying."
+            )
+        })?;
+
+        // Defensive: a knowledge mount is supposed to be a leaf, but
+        // guard against the rare case where a caller hand-built a
+        // malformed tree.
+        let children = self
+            .storage
+            .index
+            .children_of(Some(idx.id))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !children.is_empty() {
+            return Err(format!(
+                "index '{title}' has {} child(ren); a knowledge mount must \
+                 be a leaf. Move or delete the children first.",
+                children.len()
+            ));
+        }
+
+        let parent_id = idx.parent_id;
+
+        self.storage
+            .index
+            .delete(idx.id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if let Some(pid) = parent_id {
+            self.storage
+                .index
+                .reindex_positions(Some(pid))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(knowledge_id)
     }
 
     pub async fn delete_knowledge(&self, title: &str) -> Result<(), String> {
@@ -730,35 +885,43 @@ impl KmsService {
             .map_err(|e| e.to_string())
     }
 
-    pub async fn navigate(&self, path: &str) -> Result<String, String> {
+    /// Resolve a path string to a node UUID, mirroring the rules of
+    /// [`Self::navigate`] (absolute `/...`, relative with `/` separators,
+    /// and `..` segments for parent ascent) but **without** mutating the
+    /// session pointer. Use this when an operation needs an explicit
+    /// target index and the caller should stay where it is.
+    pub async fn resolve_path(&self, path: &str) -> Result<Uuid, String> {
         let current = self.get_pointer().await;
-
-        if path == ".." {
-            let node = self.get_index(current).await?;
-            if let Some(parent_id) = node.parent_id {
-                self.set_pointer(parent_id).await;
-            }
-            return self.render_location().await;
+        let trimmed = path.trim();
+        if trimmed.is_empty() || trimmed == "." {
+            return Ok(current);
         }
 
-        let (base_id, segments) = if path.starts_with('/') {
+        if trimmed == ".." {
+            let node = self.get_index(current).await?;
+            return node
+                .parent_id
+                .ok_or_else(|| "already at root, cannot go to parent".to_string());
+        }
+
+        let (base_id, segments) = if trimmed.starts_with('/') {
             let root = self
                 .storage
                 .index
                 .find_root()
                 .await
                 .map_err(|e| e.to_string())?;
-            (root.id, path[1..].split('/').collect::<Vec<_>>())
-        } else if path.starts_with("../") {
+            (root.id, trimmed[1..].split('/').collect::<Vec<_>>())
+        } else if trimmed.starts_with("../") {
             let node = self.get_index(current).await?;
             match node.parent_id {
-                Some(pid) => (pid, path[3..].split('/').collect::<Vec<_>>()),
+                Some(pid) => (pid, trimmed[3..].split('/').collect::<Vec<_>>()),
                 None => return Err("already at root, cannot go to parent".into()),
             }
-        } else if path.contains('/') {
-            (current, path.split('/').collect::<Vec<_>>())
+        } else if trimmed.contains('/') {
+            (current, trimmed.split('/').collect::<Vec<_>>())
         } else {
-            (current, vec![path])
+            (current, vec![trimmed])
         };
 
         let mut pointer = base_id;
@@ -769,17 +932,16 @@ impl KmsService {
             }
             if seg == ".." {
                 let node = self.get_index(pointer).await?;
-                match node.parent_id {
-                    Some(pid) => pointer = pid,
-                    None => return Err("already at root, cannot go to parent".into()),
-                }
+                pointer = node
+                    .parent_id
+                    .ok_or_else(|| "already at root, cannot go to parent".to_string())?;
             } else {
                 let children = self.get_children(Some(pointer)).await?;
                 match children.iter().find(|c| c.title.as_deref() == Some(seg)) {
                     Some(child) => pointer = child.id,
                     None => {
                         return Err(format!(
-                            "segment '{}' not found as child of current node",
+                            "segment '{}' not found as child of node",
                             seg
                         ))
                     }
@@ -787,40 +949,157 @@ impl KmsService {
             }
         }
 
+        Ok(pointer)
+    }
+
+    pub async fn navigate(&self, path: &str) -> Result<String, String> {
+        let pointer = self.resolve_path(path).await?;
         self.set_pointer(pointer).await;
         self.render_location().await
     }
 
-    pub async fn reorganize_children(
+    /// Move the named child indices from `source_path` into a newly
+    /// created group index mounted under `remount_path`. The new group
+    /// is created as a `TargetType::Group` and inherits the requested
+    /// title.
+    ///
+    /// `source_path` and `remount_path` are resolved through
+    /// [`Self::resolve_path`], so the caller can use any path form
+    /// supported by navigation (absolute `/...`, relative with `/`,
+    /// `..` segments). This removes the previous restriction that the
+    /// children had to live under the current pointer node — both the
+    /// source of the children and the mount point of the new group are
+    /// now explicit. After the move the session pointer jumps to the
+    /// newly created group.
+    /// Look up a direct child of `parent_id` by exact title. Returns
+    /// `Some(child_id)` if a titled child matches, `None` otherwise.
+    /// Untitled children (`title == None`) are never considered a match
+    /// — they have no name to compare against.
+    pub async fn find_child_by_title(
         &self,
+        parent_id: Uuid,
+        title: &str,
+    ) -> Result<Option<Uuid>, String> {
+        let children = self
+            .storage
+            .index
+            .children_of(Some(parent_id))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(children
+            .iter()
+            .find(|c| c.title.as_deref() == Some(title))
+            .map(|c| c.id))
+    }
+
+    /// Move the named child indices from `source_path` into a group
+    /// index mounted under `remount_path`. The group is identified by
+    /// `new_group_title`: if a `Group`-typed child with that title
+    /// already exists under `remount_path` it is **reused** (making the
+    /// call idempotent for an LLM re-running the same regroup step);
+    /// otherwise a fresh `Group`-typed index is created. Refusing to
+    /// reuse a non-Group child (e.g. a Knowledge-linker) protects
+    /// against accidentally stealing a leaf that already carries a
+    /// knowledge entry. The whole subtree under the moved children
+    /// follows them into the new group.
+    ///
+    /// `source_path` and `remount_path` are resolved through
+    /// [`Self::resolve_path`], so the caller can use any path form
+    /// supported by navigation (absolute `/...`, relative with `/`,
+    /// `..` segments). This removes the previous restriction that the
+    /// children had to live under the current pointer node — both the
+    /// source of the children and the mount point of the new group are
+    /// now explicit. After the move the session pointer jumps to the
+    /// group.
+    pub async fn move_children(
+        &self,
+        source_path: &str,
+        remount_path: &str,
         new_group_title: &str,
         child_titles: &[String],
-    ) -> Result<String, String> {
-        let current_id = self.get_pointer().await;
-        let current_node = self.get_index(current_id).await?;
+    ) -> Result<MoveChildrenResult, String> {
+        if child_titles.is_empty() {
+            return Err("child_titles must not be empty".into());
+        }
 
-        let children = self
-            .get_children(Some(current_id))
-            .await?;
+        let source_id = self
+            .resolve_path(source_path)
+            .await
+            .map_err(|e| addressing_hint("source_path", source_path, &e))?;
+        let remount_id = self
+            .resolve_path(remount_path)
+            .await
+            .map_err(|e| addressing_hint("remount_path", remount_path, &e))?;
+
+        let children = self.get_children(Some(source_id)).await?;
 
         let mut child_indices: Vec<Index> = Vec::new();
         for title in child_titles {
             let found = children
                 .iter()
                 .find(|c| c.title.as_deref() == Some(title.as_str()))
-                .ok_or_else(|| format!("'{}' is not a child of current node", title))?;
+                .ok_or_else(|| {
+                    let mut msg = format!(
+                        "'{}' is not a direct child of '{}'",
+                        title, source_path
+                    );
+                    if looks_like_bare_title(source_path) {
+                        msg.push_str(&format!(
+                            " — note: source_path='{src}' looks like a bare title, \
+                             not an absolute path. Pass an absolute path like \
+                             '/parent/{src}' instead; bare titles are resolved \
+                             against the implicit pointer and often land on the \
+                             wrong node when titles repeat.",
+                            src = source_path
+                        ));
+                    } else {
+                        msg.push_str(
+                            " (verify source_path resolves to the parent you \
+                             intended — call kms_local on it to confirm its \
+                             direct children).",
+                        );
+                    }
+                    msg
+                })?;
             child_indices.push(found.clone());
         }
 
-        let new_group = self
-            .create_index(
-                current_id,
-                Some(new_group_title.to_string()),
-                None,
-                Some(TargetType::Group),
-            )
-            .await?;
-        let new_group_id = new_group.id;
+        // Find-or-create the destination group. Reusing an existing
+        // group is the idempotent path: the caller (often an LLM
+        // re-running a regroup plan) does not have to first check
+        // whether a group with this title is already in place.
+        let (new_group_id, group_created) = match self
+            .find_child_by_title(remount_id, new_group_title)
+            .await?
+        {
+            Some(existing_id) => {
+                let existing = self
+                    .storage
+                    .index
+                    .get(existing_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if existing.target_type != TargetType::Group {
+                    return Err(format!(
+                        "cannot reuse '{}' under '{}' as the destination group: \
+                         it is already a {:?}-typed index (id {existing_id})",
+                        new_group_title, remount_path, existing.target_type
+                    ));
+                }
+                (existing_id, false)
+            }
+            None => {
+                let created = self
+                    .create_index(
+                        remount_id,
+                        Some(new_group_title.to_string()),
+                        None,
+                        Some(TargetType::Group),
+                    )
+                    .await?;
+                (created.id, true)
+            }
+        };
 
         for (i, child) in child_indices.iter().enumerate() {
             self.storage
@@ -830,9 +1109,20 @@ impl KmsService {
                 .map_err(|e| e.to_string())?;
         }
 
+        // Reindex the source only if the children actually came from a
+        // different subtree than the new group's mount point — reindexing
+        // the same node twice is harmless but skip the redundant work.
+        if source_id != remount_id {
+            self.storage
+                .index
+                .reindex_positions(Some(source_id))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
         self.storage
             .index
-            .reindex_positions(Some(current_id))
+            .reindex_positions(Some(remount_id))
             .await
             .map_err(|e| e.to_string())?;
 
@@ -844,32 +1134,53 @@ impl KmsService {
 
         self.set_pointer(new_group_id).await;
 
-        self.render_location().await
+        let location = self.render_location().await?;
+        Ok(MoveChildrenResult {
+            location,
+            new_group_id,
+            group_created,
+        })
     }
 
-    pub async fn move_index(&self, index_title: &str, new_parent_title: &str) -> Result<String, String> {
+    /// Move the index node resolved from `index_path` (together with its
+    /// entire subtree) under the index node resolved from
+    /// `new_parent_path`. Both arguments use the same path grammar as
+    /// [`Self::navigate`] / [`Self::resolve_path`] — absolute `/...`,
+    /// relative with `/`, or `..` segments — so the call site can
+    /// disambiguate between same-titled nodes that live under different
+    /// parents. The root index cannot be moved, descendants of the moved
+    /// node are rejected as a new parent (cycle), and a no-op move
+    /// (target equals current parent) returns an explicit error.
+    pub async fn move_index(
+        &self,
+        index_path: &str,
+        new_parent_path: &str,
+    ) -> Result<String, String> {
+        let idx_id = self
+            .resolve_path(index_path)
+            .await
+            .map_err(|e| addressing_hint("index_path", index_path, &e))?;
+        let new_parent_id = self
+            .resolve_path(new_parent_path)
+            .await
+            .map_err(|e| addressing_hint("new_parent_path", new_parent_path, &e))?;
+
         let idx = self
             .storage
             .index
-            .find_by_title(index_title)
+            .get(idx_id)
             .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("index '{}' not found", index_title))?;
+            .map_err(|e| e.to_string())?;
 
         if idx.parent_id.is_none() {
             return Err("cannot move the root index".into());
         }
 
-        let new_parent = self
-            .storage
-            .index
-            .find_by_title(new_parent_title)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("new parent '{}' not found", new_parent_title))?;
-
-        if idx.parent_id == Some(new_parent.id) {
-            return Err(format!("'{}' is already under '{}'", index_title, new_parent_title));
+        if idx.parent_id == Some(new_parent_id) {
+            return Err(format!(
+                "index at '{}' is already under '{}'",
+                index_path, new_parent_path
+            ));
         }
 
         let old_parent_id = idx.parent_id;
@@ -877,14 +1188,14 @@ impl KmsService {
         let target_children = self
             .storage
             .index
-            .children_of(Some(new_parent.id))
+            .children_of(Some(new_parent_id))
             .await
             .map_err(|e| e.to_string())?;
         let new_position = target_children.len() as i64;
 
         self.storage
             .index
-            .reparent(idx.id, new_parent.id, new_position)
+            .reparent(idx_id, new_parent_id, new_position)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -898,14 +1209,28 @@ impl KmsService {
 
         self.storage
             .index
-            .reindex_positions(Some(new_parent.id))
+            .reindex_positions(Some(new_parent_id))
             .await
             .map_err(|e| e.to_string())?;
 
+        // Reposition the agent on the moved node so the rendered
+        // location is meaningful even when the caller never touched
+        // the pointer (e.g. when running a path-only workflow). If the
+        // agent was already sitting on a node inside the moved subtree
+        // they now see the same subtree under its new ancestor.
+        self.set_pointer(idx_id).await;
         let location = self.render_location().await?;
+
+        let new_parent_label = self
+            .storage
+            .index
+            .get(new_parent_id)
+            .await
+            .map(|n| n.title.unwrap_or_else(|| new_parent_id.to_string()))
+            .unwrap_or_else(|_| new_parent_id.to_string());
         Ok(format!(
             "moved '{}' under '{}'\n{}",
-            index_title, new_parent_title, location
+            index_path, new_parent_label, location
         ))
     }
 
@@ -1448,6 +1773,39 @@ async fn ensure_root_index(storage: &Storage) -> Result<Uuid, String> {
     }
 }
 
+/// Heuristic: does this string look like a bare title rather than a
+/// path? Used to surface a "did you mean an absolute path?" hint when
+/// the agent passes a single segment (no `/`, no `..`) to a `_path`
+/// parameter. False positives are cheap (the hint is informational);
+/// false negatives would silently swallow the misuse.
+fn looks_like_bare_title(p: &str) -> bool {
+    let t = p.trim();
+    !t.is_empty()
+        && !t.starts_with('/')
+        && !t.contains('/')
+        && t != ".."
+        && t != "."
+}
+
+/// Wrap a `resolve_path` error from a path-typed parameter with a
+/// pointer-vs-path hint when the value looks suspicious. Leaves clearly
+/// path-shaped inputs alone so we don't add noise to genuine errors.
+fn addressing_hint(param_name: &str, value: &str, err: &str) -> String {
+    if looks_like_bare_title(value) {
+        format!(
+            "{err}\n\nhint: `{param}` expects an ABSOLUTE PATH (starting with `/`), not a bare title. \
+             '{value}' was resolved against the implicit pointer and not found there. \
+             Use an absolute path like '/parent/{value}', or call `kms_local` / \
+             `kms_search_subtree('/', '{value}')` first to discover the correct full path.",
+            err = err,
+            param = param_name,
+            value = value,
+        )
+    } else {
+        format!("{err} (parameter `{param_name}` was {value:?})")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
@@ -1599,6 +1957,322 @@ mod tests {
 
         let got = svc.get_index(child.id).await.unwrap();
         assert_eq!(got.id, child.id);
+    }
+
+    #[tokio::test]
+    async fn test_move_children_creates_group_when_missing() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let a = svc
+            .create_index(root.id, Some("a".into()), None, None)
+            .await
+            .unwrap();
+        let b = svc
+            .create_index(root.id, Some("b".into()), None, None)
+            .await
+            .unwrap();
+        let _c = svc
+            .create_index(root.id, Some("c".into()), None, None)
+            .await
+            .unwrap();
+
+        let result = svc
+            .move_children("/", "/", "新分组", &["a".into(), "b".into()])
+            .await
+            .expect("first call should create the group");
+        assert!(result.group_created, "first call must create the group");
+        assert!(result.location.contains("新分组"));
+
+        // a, b should now sit under 新分组; c stays at root.
+        let group = svc.get_index(result.new_group_id).await.unwrap();
+        assert_eq!(group.parent_id, Some(root.id));
+        assert_eq!(group.target_type, TargetType::Group);
+        let group_kids = svc.get_children(Some(result.new_group_id)).await.unwrap();
+        let titles: Vec<&str> = group_kids.iter().filter_map(|c| c.title.as_deref()).collect();
+        assert_eq!(group_kids.len(), 2);
+        assert!(titles.contains(&"a"));
+        assert!(titles.contains(&"b"));
+        assert!(titles.iter().all(|t| *t != "c"));
+
+        // The moved children keep their original ids so the call is
+        // transparent to anyone holding references to them.
+        let group_kid_ids: Vec<Uuid> = group_kids.iter().map(|c| c.id).collect();
+        assert!(group_kid_ids.contains(&a.id));
+        assert!(group_kid_ids.contains(&b.id));
+    }
+
+    #[tokio::test]
+    async fn test_move_children_reuses_existing_group() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        svc.create_index(root.id, Some("a".into()), None, None)
+            .await
+            .unwrap();
+        svc.create_index(root.id, Some("b".into()), None, None)
+            .await
+            .unwrap();
+        let _c = svc
+            .create_index(root.id, Some("c".into()), None, None)
+            .await
+            .unwrap();
+        // Pre-create the destination group so the second move reuses it.
+        let existing_group = svc
+            .create_index(root.id, Some("新分组".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        // Seed the group with a child so the reused group doesn't end
+        // up empty after the call.
+        svc.create_index(existing_group.id, Some("seed".into()), None, None)
+            .await
+            .unwrap();
+
+        // Move "a" and "b" into the pre-existing group.
+        let result = svc
+            .move_children("/", "/", "新分组", &["a".into(), "b".into()])
+            .await
+            .expect("second call should reuse the existing group");
+        assert!(!result.group_created, "second call must NOT create a new group");
+        assert_eq!(result.new_group_id, existing_group.id, "must reuse the same id");
+
+        // The group now contains seed, a, b.
+        let kids = svc.get_children(Some(existing_group.id)).await.unwrap();
+        let titles: Vec<&str> = kids.iter().filter_map(|c| c.title.as_deref()).collect();
+        assert_eq!(kids.len(), 3);
+        assert!(titles.contains(&"seed"));
+        assert!(titles.contains(&"a"));
+        assert!(titles.contains(&"b"));
+        // c stays at root.
+        let root_kids = svc.get_children(Some(root.id)).await.unwrap();
+        let root_titles: Vec<&str> = root_kids.iter().filter_map(|c| c.title.as_deref()).collect();
+        assert_eq!(root_titles, vec!["c", "新分组"]);
+
+        // Now the source no longer carries a/b, so the call is
+        // trivially idempotent: the same group is reported back, and
+        // the no-op move (no children to relocate) does not change
+        // the tree.
+        let second = svc
+            .move_children("/", "/", "新分组", &[])
+            .await
+            .expect_err("empty child_titles should still be rejected");
+        assert!(second.contains("must not be empty"));
+
+        // The group still holds a, b, seed — no new copies, no failure.
+        let kids2 = svc.get_children(Some(existing_group.id)).await.unwrap();
+        assert_eq!(kids2.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_move_children_rejects_non_group_reuse() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        // Create a Knowledge-linker under root that already occupies
+        // the title the move wants to reuse.
+        let knowledge = svc
+            .create_knowledge("TestEntity · 病因", KnowledgeType::Aspect, vec![], None)
+            .await
+            .unwrap();
+        svc.create_index(
+            root.id,
+            Some("新分组".into()),
+            Some(knowledge.id),
+            Some(TargetType::Knowledge),
+        )
+        .await
+        .unwrap();
+        svc.create_index(root.id, Some("a".into()), None, None)
+            .await
+            .unwrap();
+
+        let err = svc
+            .move_children("/", "/", "新分组", &["a".into()])
+            .await
+            .expect_err("should refuse to reuse a Knowledge-linker as a group");
+        assert!(
+            err.contains("Knowledge") || err.contains("新分组"),
+            "error should explain the type conflict: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_index_rejects_duplicate_title() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("根").await.unwrap();
+        let first = svc
+            .create_index(root.id, Some("重复名".into()), None, None)
+            .await
+            .unwrap();
+
+        // Same title under the same parent must be rejected.
+        let err = svc
+            .create_index(root.id, Some("重复名".into()), None, None)
+            .await
+            .expect_err("duplicate title should be rejected");
+        assert!(err.contains("重复名"), "error should name the duplicate: {err}");
+        assert!(
+            err.contains(&first.id.to_string()),
+            "error should reference the conflicting index id: {err}"
+        );
+
+        // The same title under a different parent is allowed.
+        let sibling = svc
+            .create_index(root.id, Some("兄弟".into()), None, None)
+            .await
+            .unwrap();
+        let allowed = svc
+            .create_index(sibling.id, Some("重复名".into()), None, None)
+            .await
+            .expect("same title under a different parent should be allowed");
+        assert_eq!(allowed.parent_id, Some(sibling.id));
+        assert_ne!(allowed.id, first.id);
+
+        // Untitled children are not subject to the uniqueness rule.
+        let untitled_a = svc
+            .create_index(root.id, None, None, None)
+            .await
+            .unwrap();
+        let untitled_b = svc
+            .create_index(root.id, None, None, None)
+            .await
+            .unwrap();
+        assert_ne!(untitled_a.id, untitled_b.id);
+    }
+
+    #[tokio::test]
+    async fn test_move_index_uses_paths() {
+        // Build a tree (the create_index_root node is the actual root,
+        // its title is irrelevant for path resolution — `/` points at it
+        // directly):
+        //   /
+        //   ├── A
+        //   │   └── A1
+        //   └── B
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let a = svc
+            .create_index(root.id, Some("A".into()), None, None)
+            .await
+            .unwrap();
+        let _a1 = svc
+            .create_index(a.id, Some("A1".into()), None, None)
+            .await
+            .unwrap();
+        let b = svc
+            .create_index(root.id, Some("B".into()), None, None)
+            .await
+            .unwrap();
+
+        // Move /A under /B using absolute paths.
+        let result = svc
+            .move_index("/A", "/B")
+            .await
+            .expect("absolute-path move should succeed");
+        // Result echoes the source path and the destination parent's
+        // title (not the full path).
+        assert!(result.contains("/A"), "result should echo source path: {result}");
+        assert!(result.contains("under 'B'"), "result should echo destination title: {result}");
+
+        // The subtree must follow: A1 is now a grandchild of B.
+        let b_children = svc.get_children(Some(b.id)).await.unwrap();
+        assert_eq!(b_children.len(), 1);
+        assert_eq!(b_children[0].id, a.id);
+        let a_children = svc.get_children(Some(a.id)).await.unwrap();
+        assert_eq!(a_children.len(), 1);
+        assert_eq!(a_children[0].id, _a1.id);
+
+        // No-op move (already under the requested parent) is rejected.
+        let err = svc
+            .move_index("/B/A", "/B")
+            .await
+            .expect_err("no-op move should be rejected");
+        assert!(
+            err.contains("already under"),
+            "error should explain the no-op: {err}"
+        );
+
+        // Cycle prevention: cannot move a node under one of its descendants.
+        let err = svc
+            .move_index("/B", "/B/A")
+            .await
+            .expect_err("move under a descendant should be rejected");
+        assert!(
+            err.contains("descendant") || err.contains("reparent"),
+            "error should mention the cycle: {err}"
+        );
+
+        // Root cannot be moved. The root here is the node created by
+        // `create_index_root` — its title is "root", so `/root` resolves
+        // to the actual root index.
+        let err = svc
+            .move_index("/root", "/B")
+            .await
+            .expect_err("moving the root should be rejected");
+        assert!(
+            err.contains("root"),
+            "error should mention the root constraint: {err}"
+        );
+
+        // Relative path resolution: sit on A1 and use `..` to reach A.
+        svc.set_pointer(_a1.id).await;
+        let c = svc
+            .create_index(root.id, Some("C".into()), None, None)
+            .await
+            .unwrap();
+        let result = svc
+            .move_index("..", "/C")
+            .await
+            .expect("relative `..` from A1 should resolve to A");
+        assert!(
+            result.contains(".."),
+            "result should echo the relative source: {result}"
+        );
+        assert!(
+            result.contains("under 'C'"),
+            "result should echo the destination title: {result}"
+        );
+        // A (with A1) is now under C.
+        let c_kids = svc.get_children(Some(c.id)).await.unwrap();
+        assert_eq!(c_kids.len(), 1);
+        assert_eq!(c_kids[0].id, a.id);
+    }
+
+    #[tokio::test]
+    async fn test_move_index_disambiguates_same_titled_siblings() {
+        // Two leaves with the same title living under different parents
+        // must be moved independently by their full path. Title-based
+        // lookup would silently pick the wrong one.
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let p1 = svc
+            .create_index(root.id, Some("P1".into()), None, None)
+            .await
+            .unwrap();
+        let p2 = svc
+            .create_index(root.id, Some("P2".into()), None, None)
+            .await
+            .unwrap();
+        let dup1 = svc
+            .create_index(p1.id, Some("dup".into()), None, None)
+            .await
+            .unwrap();
+        let dup2 = svc
+            .create_index(p2.id, Some("dup".into()), None, None)
+            .await
+            .unwrap();
+        let new_home = svc
+            .create_index(root.id, Some("home".into()), None, None)
+            .await
+            .unwrap();
+
+        svc.move_index("/P1/dup", "/home")
+            .await
+            .expect("path-based move should reach the right duplicate");
+        // dup1 should now sit under home; dup2 should still sit under p2.
+        let home_children = svc.get_children(Some(new_home.id)).await.unwrap();
+        assert_eq!(home_children.len(), 1);
+        assert_eq!(home_children[0].id, dup1.id);
+        let p2_children = svc.get_children(Some(p2.id)).await.unwrap();
+        assert_eq!(p2_children.len(), 1);
+        assert_eq!(p2_children[0].id, dup2.id);
     }
 
     // ---------- local-view tests ----------
@@ -1888,6 +2562,331 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("differ"));
+    }
+
+    // ─── delete_index hardening ──────────────────────────────────────
+
+    /// `delete_index` MUST refuse when the target is a knowledge mount
+    /// (the old behaviour silently orphaned the underlying Knowledge).
+    #[tokio::test]
+    async fn delete_index_refuses_knowledge_mount() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+
+        let (e, _) = svc
+            .create_entity(vec![make_name("心脏")], "器官")
+            .await
+            .unwrap();
+        let k = svc
+            .create_knowledge("心脏病", KnowledgeType::Aspect, vec![e.id], None)
+            .await
+            .unwrap();
+        let _idx = svc
+            .create_index(
+                root.id,
+                Some("心脏病".into()),
+                Some(k.id),
+                Some(TargetType::Knowledge),
+            )
+            .await
+            .unwrap();
+
+        let err = svc.delete_index("心脏病").await.unwrap_err();
+        assert!(
+            err.contains("knowledge mount") || err.contains("target_type=knowledge"),
+            "error should explain why a knowledge mount cannot be deleted via delete_index: {err}"
+        );
+        assert!(
+            err.contains("kms_delete_knowledge") && err.contains("kms_detach_knowledge"),
+            "error should redirect the caller to the right tool: {err}"
+        );
+
+        // Both rows must still exist after the refusal.
+        assert!(
+            svc.storage
+                .index
+                .find_by_title("心脏病")
+                .await
+                .unwrap()
+                .is_some(),
+            "index must survive a refused delete"
+        );
+        assert!(
+            svc.get_knowledge(k.id).await.is_ok(),
+            "knowledge must survive a refused delete"
+        );
+    }
+
+    /// `delete_index` MUST refuse when the target has children
+    /// (the old behaviour silently reparented them to the grandparent).
+    #[tokio::test]
+    async fn delete_index_refuses_non_empty_group() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let parent = svc
+            .create_index(root.id, Some("循环系统".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let _c1 = svc
+            .create_index(parent.id, Some("心".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let _c2 = svc
+            .create_index(parent.id, Some("血管".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+
+        let err = svc.delete_index("循环系统").await.unwrap_err();
+        assert!(
+            err.contains("not empty"),
+            "error should explain that the group is non-empty: {err}"
+        );
+        assert!(
+            err.contains("心") || err.contains("血管"),
+            "error should preview the surviving children so the caller knows what to clean up: {err}"
+        );
+
+        // All four index rows must still exist after the refusal.
+        for title in ["循环系统", "心", "血管"] {
+            assert!(
+                svc.storage
+                    .index
+                    .find_by_title(title)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "index '{title}' must survive a refused delete"
+            );
+        }
+    }
+
+    /// After cleaning up the children, `delete_index` on the (now empty)
+    /// group must succeed — the refusal is a guard, not a permanent
+    /// lockout.
+    #[tokio::test]
+    async fn delete_index_works_on_empty_group_after_cleanup() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let parent = svc
+            .create_index(root.id, Some("临时组".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let _c1 = svc
+            .create_index(parent.id, Some("子".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+
+        // Delete the child first, then the parent. Both calls must
+        // succeed because the parent is empty by the time we ask.
+        svc.delete_index("子").await.unwrap();
+        svc.delete_index("临时组").await.unwrap();
+
+        assert!(
+            svc.storage
+                .index
+                .find_by_title("临时组")
+                .await
+                .unwrap()
+                .is_none(),
+            "empty group should delete cleanly after cleanup"
+        );
+    }
+
+    // ─── detach_knowledge_index ──────────────────────────────────────
+
+    /// `detach_knowledge_index` removes the mount and leaves the
+    /// Knowledge row as an orphan. Round-tripping through
+    /// `link_orphans` restores the mount.
+    #[tokio::test]
+    async fn detach_knowledge_index_round_trip() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let bucket = svc
+            .create_index(root.id, Some("挂载点".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let (e, _) = svc
+            .create_entity(vec![make_name("胃")], "器官")
+            .await
+            .unwrap();
+        let k = svc
+            .create_knowledge("胃炎", KnowledgeType::Aspect, vec![e.id], None)
+            .await
+            .unwrap();
+        let idx = svc
+            .create_index(
+                bucket.id,
+                Some("胃炎".into()),
+                Some(k.id),
+                Some(TargetType::Knowledge),
+            )
+            .await
+            .unwrap();
+
+        // Detach: the index row is gone, the knowledge survives, and
+        // the returned id matches the knowledge we just orphaned.
+        let orphan = svc.detach_knowledge_index("胃炎").await.unwrap();
+        assert_eq!(orphan, k.id);
+        assert!(
+            svc.storage
+                .index
+                .find_by_title("胃炎")
+                .await
+                .unwrap()
+                .is_none(),
+            "index row should be gone after detach"
+        );
+        assert!(
+            svc.get_knowledge(k.id).await.is_ok(),
+            "knowledge row should still exist as orphan"
+        );
+
+        // Re-link: the orphan returns to the tree under a (possibly
+        // different) parent. The new index points at the same knowledge.
+        let _ = svc.link_orphans("挂载点", &["胃炎"]).await.unwrap();
+        let remounted = svc
+            .storage
+            .index
+            .find_by_title("胃炎")
+            .await
+            .unwrap()
+            .expect("knowledge must be remountable via link_orphans");
+        assert_eq!(remounted.target, Some(k.id));
+        assert_eq!(remounted.target_type, TargetType::Knowledge);
+        // The remount should be a *new* index id (the original was deleted).
+        assert_ne!(remounted.id, idx.id);
+    }
+
+    /// `detach_knowledge_index` MUST refuse when invoked on a Group —
+    /// detach is strictly for knowledge mounts.
+    #[tokio::test]
+    async fn detach_knowledge_index_refuses_group() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let _grp = svc
+            .create_index(root.id, Some("组".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+
+        let err = svc.detach_knowledge_index("组").await.unwrap_err();
+        assert!(
+            err.contains("Group") && err.contains("kms_delete_index"),
+            "error should redirect group deletion to kms_delete_index: {err}"
+        );
+    }
+
+    // ─── path-vs-title addressing hints for move tools ───────────────
+
+    /// When `move_children` receives a bare title in `source_path`,
+    /// the error MUST steer the caller toward an absolute path.
+    #[tokio::test]
+    async fn move_children_hints_when_source_path_is_bare_title() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let parent = svc
+            .create_index(root.id, Some("循环系统".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let _c1 = svc
+            .create_index(parent.id, Some("c1".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+
+        // Bare title — looks like a title to the LLM, but to resolve_path
+        // it's a relative segment under the implicit pointer (which is
+        // root here; no child named "循环系统" exists at root in this
+        // shape — yes it does actually). The hint must fire whether or
+        // not resolution accidentally succeeds: use a title that does
+        // NOT resolve so we get the error path.
+        let err = svc
+            .move_children("不存在的标题", "/", "x", &["whatever".to_string()])
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("ABSOLUTE PATH"),
+            "error should mention ABSOLUTE PATH: {err}"
+        );
+        assert!(
+            err.contains("`source_path`"),
+            "error should name the parameter: {err}"
+        );
+        assert!(
+            err.contains("kms_local") || err.contains("kms_search_subtree"),
+            "error should point to discovery tools: {err}"
+        );
+    }
+
+    /// When `move_children` finds the source path but a `child_titles`
+    /// entry isn't a direct child AND `source_path` looks like a bare
+    /// title, the missing-child error includes the path-vs-title hint.
+    #[tokio::test]
+    async fn move_children_child_not_found_includes_hint_when_source_looks_like_title() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        // Put a node named "循环系统" directly under root so the bare
+        // title "循环系统" *resolves* (via the implicit pointer which
+        // starts at root) — this is the silent-misaddressing path.
+        let parent = svc
+            .create_index(root.id, Some("循环系统".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+        let _real_child = svc
+            .create_index(parent.id, Some("心律失常".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+
+        // Ask to move a child that does not exist — the failure must
+        // call out the bare-title shape.
+        let err = svc
+            .move_children("循环系统", "/", "x", &["不存在".to_string()])
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("bare title"),
+            "error should flag the bare-title shape of source_path: {err}"
+        );
+        assert!(
+            err.contains("absolute path") || err.contains("/parent/"),
+            "error should suggest an absolute path form: {err}"
+        );
+    }
+
+    /// `move_index` mirrors `move_children`: a bare title in a `_path`
+    /// parameter triggers the hint.
+    #[tokio::test]
+    async fn move_index_hints_when_path_is_bare_title() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("root").await.unwrap();
+        let _a = svc
+            .create_index(root.id, Some("A".into()), None, Some(TargetType::Group))
+            .await
+            .unwrap();
+
+        let err = svc
+            .move_index("不存在", "/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("ABSOLUTE PATH") && err.contains("`index_path`"),
+            "error should hint that index_path needs an absolute path: {err}"
+        );
+    }
+
+    /// Absolute paths must NOT receive the bare-title hint — the hint
+    /// is only for the suspicious shape, not for genuine errors.
+    #[tokio::test]
+    async fn move_index_absolute_path_error_has_no_bare_title_hint() {
+        let svc = setup_service().await;
+        let _root = svc.create_index_root("root").await.unwrap();
+
+        let err = svc
+            .move_index("/不存在", "/")
+            .await
+            .unwrap_err();
+        assert!(
+            !err.contains("ABSOLUTE PATH"),
+            "absolute-path errors must not be polluted with the bare-title hint: {err}"
+        );
     }
 }
 

@@ -4,6 +4,11 @@
 //! panel never creates a `Block` or border. The host supplies the
 //! surrounding border so the panel can be visually grouped with
 //! the chat history (or floated standalone in the future).
+//!
+//! `render_agent_panel` is parameterized on `&dyn AgentPanelTheme`
+//! and `&dyn AgentPanelTools`. Hosts that don't want to implement
+//! either pass [`DefaultAgentPanelTheme`] and
+//! [`DefaultAgentPanelTools`] respectively.
 
 use std::time::Instant;
 
@@ -12,40 +17,42 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, layout::Rect};
 
-use crate::agent_panel::state::{
+use crate::state::{
     AgentEntryLayout, AgentEntryStatus, AgentPanelEntry, AgentPanelEvent, AgentPanelState,
     MAX_VISIBLE_AGENTS,
 };
-use crate::agent_panel::tools::{format_duration, tool_user_facing_name, truncate_str};
-use crate::theme::Theme;
-use crate::widgets::SPINNER_FRAMES;
+use crate::theme::AgentPanelTheme;
+use crate::tools::{format_duration, truncate_str, AgentPanelTools};
+
+/// Braille-pattern spinner frames. Indexed by the host's
+/// `spinner_tick` counter.
+const SPINNER_FRAMES: &[&str] = &[
+    "\u{2807}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+];
 
 /// Render the sub-agent list into the given `area`.
 ///
-/// This is the inner-section variant: it does *not* create its own
-/// bordered `Block`. The caller (typically the Agent chat panel)
-/// supplies the border so the sub-agent list can be visually grouped
-/// with the chat history as one panel.
-///
-/// The sub-agent list is always rendered as content only — no
-/// `Block`, no borders. The header line ("Agents · N total …") is
-/// included so the list is self-describing when read in isolation,
-/// but a caller that wants a separate header can drop it.
+/// `theme` controls every color and style. `tools` renders the
+/// tool-call label shown in the row hint and the expanded event log.
+/// `spinner_tick` is the host's monotonically-advancing frame counter;
+/// the renderer uses it to pick a spinner frame for running rows.
 pub fn render_agent_panel(
     f: &mut Frame,
     state: &AgentPanelState,
-    theme: &Theme,
+    theme: &dyn AgentPanelTheme,
+    tools: &dyn AgentPanelTools,
     area: Rect,
     spinner_tick: usize,
 ) {
-    let lines = render_panel_lines(state, theme, area.width as usize, spinner_tick);
+    let lines = render_panel_lines(state, theme, tools, area.width as usize, spinner_tick);
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, area);
 }
 
 fn render_panel_lines(
     state: &AgentPanelState,
-    theme: &Theme,
+    theme: &dyn AgentPanelTheme,
+    tools: &dyn AgentPanelTools,
     width: usize,
     spinner_tick: usize,
 ) -> Vec<Line<'static>> {
@@ -60,15 +67,12 @@ fn render_panel_lines(
         " Agents · {} total ({} ✓ · {} ⠋ · {} ✗)",
         total, completed, running, failed
     );
-    lines.push(Line::from(Span::styled(
-        header,
-        theme.tool_call_bold_style(),
-    )));
+    lines.push(Line::from(Span::styled(header, theme.tool_call_bold_style())));
 
     if state.agents.is_empty() {
         lines.push(Line::from(Span::styled(
             "    (no agents)".to_string(),
-            ratatui::style::Style::default().fg(theme.text_muted),
+            ratatui::style::Style::default().fg(theme.text_muted()),
         )));
         return lines;
     }
@@ -111,11 +115,13 @@ fn render_panel_lines(
             is_selected,
             now,
         };
-        lines.push(render_agent_row(entry, &layout, theme, width, spinner_tick));
+        lines.push(render_agent_row(
+            entry, &layout, theme, width, spinner_tick,
+        ));
 
         if entry.expanded {
             for ev in &entry.events {
-                for ev_line in render_panel_event(ev, theme) {
+                for ev_line in render_panel_event(ev, theme, tools) {
                     let mut spans = vec![Span::raw("│   ")];
                     spans.extend(ev_line.spans);
                     lines.push(Line::from(spans));
@@ -123,7 +129,7 @@ fn render_panel_lines(
             }
         } else if matches!(entry.status, AgentEntryStatus::Running) {
             let hint = entry
-                .activity_hint()
+                .activity_hint_with(tools)
                 .unwrap_or_else(|| "starting…".to_string());
             lines.push(render_peek_line(&hint, theme, width));
         }
@@ -137,7 +143,7 @@ fn render_panel_lines(
         lines.push(Line::from(Span::styled(
             summary,
             ratatui::style::Style::default()
-                .fg(theme.text_muted)
+                .fg(theme.text_muted())
                 .add_modifier(Modifier::DIM),
         )));
     }
@@ -148,14 +154,14 @@ fn render_panel_lines(
 fn render_agent_row(
     entry: &AgentPanelEntry,
     layout: &AgentEntryLayout,
-    theme: &Theme,
+    theme: &dyn AgentPanelTheme,
     width: usize,
     spinner_tick: usize,
 ) -> Line<'static> {
     let (icon, icon_style) = match &entry.status {
         AgentEntryStatus::Running => (
             SPINNER_FRAMES[spinner_tick % SPINNER_FRAMES.len()],
-            ratatui::style::Style::default().fg(theme.spinner),
+            ratatui::style::Style::default().fg(theme.spinner_color()),
         ),
         AgentEntryStatus::Completed { .. } => ("✓", theme.success_style()),
         AgentEntryStatus::Failed { .. } => ("✗", theme.error_style()),
@@ -163,14 +169,14 @@ fn render_agent_row(
 
     let title_style = match &entry.status {
         AgentEntryStatus::Running => ratatui::style::Style::default()
-            .fg(theme.text_primary)
+            .fg(theme.text_primary())
             .add_modifier(Modifier::BOLD),
         AgentEntryStatus::Failed { .. } => theme.error_style(),
         AgentEntryStatus::Completed { .. } => {
             let base = if entry.is_recently_completed(layout.now) {
-                ratatui::style::Style::default().fg(theme.text_primary)
+                ratatui::style::Style::default().fg(theme.text_primary())
             } else {
-                ratatui::style::Style::default().fg(theme.text_muted)
+                ratatui::style::Style::default().fg(theme.text_muted())
             };
             base.add_modifier(Modifier::CROSSED_OUT)
         }
@@ -192,9 +198,7 @@ fn render_agent_row(
     }
 
     let hint = match &entry.status {
-        AgentEntryStatus::Running => entry
-            .activity_hint()
-            .unwrap_or_else(|| "starting…".to_string()),
+        AgentEntryStatus::Running => "starting…".to_string(), // activity_hint is built per-frame below
         AgentEntryStatus::Failed { error, .. } => truncate_str(error, 60),
         AgentEntryStatus::Completed { .. } => "done".to_string(),
     };
@@ -202,7 +206,7 @@ fn render_agent_row(
     let connector = if layout.is_last { "└─ " } else { "├─ " };
     let connector_span = Span::styled(
         connector,
-        ratatui::style::Style::default().fg(theme.text_muted),
+        ratatui::style::Style::default().fg(theme.text_muted()),
     );
 
     let budget = width.saturating_sub(2);
@@ -227,41 +231,45 @@ fn render_agent_row(
         connector_span,
         Span::styled(icon.to_string(), icon_style),
         title_span,
-        Span::styled(meta, ratatui::style::Style::default().fg(theme.text_muted)),
+        Span::styled(meta, ratatui::style::Style::default().fg(theme.text_muted())),
         Span::styled(
             hint_full,
-            ratatui::style::Style::default().fg(theme.text_secondary),
+            ratatui::style::Style::default().fg(theme.text_secondary()),
         ),
     ])
 }
 
-fn render_panel_event(ev: &AgentPanelEvent, theme: &Theme) -> Vec<Line<'static>> {
+fn render_panel_event(
+    ev: &AgentPanelEvent,
+    theme: &dyn AgentPanelTheme,
+    tools: &dyn AgentPanelTools,
+) -> Vec<Line<'static>> {
     match ev {
         AgentPanelEvent::LlmResponse(s) if !s.is_empty() => {
             vec![Line::from(vec![
                 Span::styled("      💬 ".to_string(), ratatui::style::Style::default()),
                 Span::styled(
                     truncate_str(s, 200),
-                    ratatui::style::Style::default().fg(theme.text_primary),
+                    ratatui::style::Style::default().fg(theme.text_primary()),
                 ),
             ])]
         }
         AgentPanelEvent::LlmResponse(_) => Vec::new(),
         AgentPanelEvent::ToolCall { name, input } => {
-            let summary = tool_user_facing_name(name, input);
+            let summary = tools.user_facing_name(name, input);
             vec![Line::from(vec![
                 Span::styled("      🔧 ".to_string(), ratatui::style::Style::default()),
                 Span::styled(
                     summary,
-                    ratatui::style::Style::default().fg(theme.text_secondary),
+                    ratatui::style::Style::default().fg(theme.text_secondary()),
                 ),
             ])]
         }
         AgentPanelEvent::ToolResult { ok, content } => {
             let (icon, color) = if *ok {
-                ("✓", theme.tool_ok)
+                ("✓", theme.tool_ok())
             } else {
-                ("✗", theme.tool_err)
+                ("✗", theme.tool_err())
             };
             let summary = if let Ok(val) = serde_json::from_str::<serde_json::Value>(content) {
                 if let Some(s) = val.as_str() {
@@ -279,7 +287,7 @@ fn render_panel_event(ev: &AgentPanelEvent, theme: &Theme) -> Vec<Line<'static>>
                 ),
                 Span::styled(
                     summary,
-                    ratatui::style::Style::default().fg(theme.text_muted),
+                    ratatui::style::Style::default().fg(theme.text_muted()),
                 ),
             ])]
         }
@@ -290,7 +298,7 @@ fn render_panel_event(ev: &AgentPanelEvent, theme: &Theme) -> Vec<Line<'static>>
     }
 }
 
-fn render_peek_line(hint: &str, theme: &Theme, width: usize) -> Line<'static> {
+fn render_peek_line(hint: &str, theme: &dyn AgentPanelTheme, width: usize) -> Line<'static> {
     let prefix = "│   ↳ ";
     let budget = width.saturating_sub(prefix.chars().count());
     let truncated = truncate_str(hint, budget);
@@ -298,7 +306,7 @@ fn render_peek_line(hint: &str, theme: &Theme, width: usize) -> Line<'static> {
         Span::raw(prefix),
         Span::styled(
             truncated,
-            ratatui::style::Style::default().fg(theme.text_secondary),
+            ratatui::style::Style::default().fg(theme.text_secondary()),
         ),
     ])
 }
@@ -307,4 +315,4 @@ fn render_peek_line(hint: &str, theme: &Theme, width: usize) -> Line<'static> {
 // discoverable next to the entry struct it lays out. Re-imported
 // here purely so the renderer can use it as a function parameter.
 #[allow(unused_imports)]
-use crate::agent_panel::state::AgentEntryLayout as _LayoutReExport;
+use crate::state::AgentEntryLayout as _LayoutReExport;

@@ -147,7 +147,7 @@ async fn dispatch_parallel(
         // one-shot `local_view` of the staging subtree and never rely
         // on a pinned global pointer. The shared `svc` is passed
         // directly — writes use `parent_ref` (title), reads use
-        // absolute paths via `kms_view_local`.
+        // absolute paths via `kms_local`.
         let sub_svc = svc.clone();
         // The absolute path of the staging Group we just created,
         // rooted at the system root (e.g. "/心血管疾病"). The factory

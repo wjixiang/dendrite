@@ -13,7 +13,7 @@ pub fn registration(svc: Arc<kms::KmsService>, _corpus: Arc<corpus::CorpusServic
     .parameter("entities", "array", "Array of all entity names mentioned in the content (wrapping each in [[...]])")
     .parameter("content", "string", "The knowledge content/notes — use [[entity name]] to mark every entity mention")
     .parameter("source_document_id", "string", "Optional: UUID of the source document (for provenance tracking)")
-    .parameter("source_chunk_idx", "integer", "Optional: chunk index in the source document")
+    .parameter("source_chunk_idx", "number", "Optional: chunk index in the source document (non-negative integer)")
     .required("title")
     .required("knowledge_type")
     .required("entities")
@@ -40,15 +40,18 @@ pub fn registration(svc: Arc<kms::KmsService>, _corpus: Arc<corpus::CorpusServic
 
                 let content = content.map(|c| flatten_nested_headings(&c));
 
-                // Parse optional source provenance.
+                // Parse optional source provenance. `source_chunk_idx` may
+                // come in as a JSON integer or a float literal (LLM-issued
+                // tool calls sometimes emit `2.0`); accept both via
+                // `parse_usize`.
                 let source = match (
                     input["source_document_id"].as_str(),
-                    input["source_chunk_idx"].as_u64(),
+                    parse_usize(&input["source_chunk_idx"], "source_chunk_idx"),
                 ) {
                     (Some(doc_id_str), Some(chunk_idx)) => {
                         let doc_id = uuid::Uuid::parse_str(doc_id_str)
                             .map_err(|e| e.to_string())?;
-                        Some((doc_id, chunk_idx as usize))
+                        Some((doc_id, chunk_idx))
                     }
                     _ => None,
                 };
@@ -95,6 +98,26 @@ fn flatten_nested_headings(content: &str) -> String {
         result.pop();
     }
     result
+}
+
+/// Parse a numeric JSON value as `usize`. Accepts both integer literals
+/// (`42`) and float literals that happen to be whole numbers (`42.0`).
+/// Returns `None` for missing or non-numeric values so callers can fall
+/// back to "no source provenance" semantics.
+fn parse_usize(value: &Value, field: &str) -> Option<usize> {
+    let _ = field;
+    if value.is_null() {
+        return None;
+    }
+    if let Some(n) = value.as_u64() {
+        return Some(n as usize);
+    }
+    if let Some(f) = value.as_f64() {
+        if f.is_finite() && f >= 0.0 && f <= usize::MAX as f64 && f.fract() == 0.0 {
+            return Some(f as usize);
+        }
+    }
+    None
 }
 
 /// Vague title suffixes that indicate the aspect is too generic.

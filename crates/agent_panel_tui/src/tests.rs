@@ -56,9 +56,9 @@ fn toggle_selected_flips() {
 }
 
 #[test]
-fn tool_user_facing_name_view_local() {
-    let s = tool_user_facing_name("kms_view_local", &serde_json::json!({"path": "src/lib.rs"}));
-    assert_eq!(s, "View src/lib.rs");
+fn tool_user_facing_name_local() {
+    let s = tool_user_facing_name("kms_local", &serde_json::json!({"path": "src/lib.rs"}));
+    assert_eq!(s, "Inspect src/lib.rs");
 }
 
 #[test]

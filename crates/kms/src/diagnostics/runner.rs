@@ -63,11 +63,14 @@ fn format_location_with_leaf_marker(path: &str, leaf_kind: LocationLeafKind) -> 
 async fn run_index_diagnostics(
     storage: &Storage,
 ) -> Result<(Vec<Diagnostic>, HashMap<Uuid, String>), String> {
-    use super::index_rules::{EmptyLeaf, ExcessiveChildren, InconsistentPrefixes};
+    use super::index_rules::{
+        DuplicateSiblingTitles, EmptyLeaf, ExcessiveChildren, InconsistentPrefixes,
+    };
 
     let rules: Vec<Box<dyn IndexDiagnosticRule>> = vec![
         Box::new(EmptyLeaf),
         Box::new(ExcessiveChildren),
+        Box::new(DuplicateSiblingTitles),
         Box::new(InconsistentPrefixes),
     ];
 

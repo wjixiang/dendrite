@@ -117,7 +117,7 @@ impl IndexDiagnosticRule for ExcessiveChildren {
                 severity: Severity::Warning,
                 message: format!("有 {} 个子节点，建议重构整理", children.len()),
                 suggested_actions: vec![
-                    "使用 kms_reorganize_children 将子节点按主题分组".to_string(),
+                    "使用 kms_move_children 将子节点按主题分组".to_string(),
                 ],
             })
         } else {
@@ -127,6 +127,71 @@ impl IndexDiagnosticRule for ExcessiveChildren {
 
     fn name(&self) -> &str {
         "index.excessive_children"
+    }
+}
+
+pub struct DuplicateSiblingTitles;
+
+impl IndexDiagnosticRule for DuplicateSiblingTitles {
+    fn check(
+        &self,
+        _node: &Index,
+        _depth: usize,
+        location: &str,
+        children: &[Index],
+    ) -> Option<Diagnostic> {
+        use std::collections::HashMap;
+
+        // Count occurrences of each titled child. Untitled children
+        // (title == None) are not considered duplicates — there is no
+        // name to compare.
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for child in children {
+            if let Some(title) = child.title.as_deref() {
+                if title.is_empty() {
+                    continue;
+                }
+                *seen.entry(title).or_insert(0) += 1;
+            }
+        }
+
+        let mut duplicates: Vec<String> = seen
+            .into_iter()
+            .filter_map(|(title, count)| {
+                if count > 1 {
+                    Some(format!("「{}」({} 次)", title, count))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if duplicates.is_empty() {
+            return None;
+        }
+
+        duplicates.sort();
+
+        Some(Diagnostic {
+            code: self.name().to_string(),
+            code_description: Some(CodeDescription {
+                href: "kms://diagnostics/index/duplicate-sibling-titles".to_string(),
+            }),
+            location: location.to_string(),
+            severity: Severity::Error,
+            message: format!(
+                "同级索引节点存在重名: {}。同一父节点下子索引标题必须唯一，否则 `find_by_title` 等按名查找会歧义。",
+                duplicates.join("、")
+            ),
+            suggested_actions: vec![
+                "为重名的子节点补上唯一区分（例如加上切面/编号后缀）后重命名。".to_string(),
+                "重命名后再调用 `kms_local` 确认无残留歧义。".to_string(),
+            ],
+        })
+    }
+
+    fn name(&self) -> &str {
+        "index.duplicate_sibling_titles"
     }
 }
 

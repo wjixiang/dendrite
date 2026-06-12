@@ -5,7 +5,7 @@
 //! `local_view` of the staging subtree and a diagnostic snapshot.
 //! After each mutation tool call, `write()` re-runs diagnostics and
 //! bumps the version so the framework re-injects the updated snapshot.
-//! Sub-agents navigate by absolute path via `kms_view_local`.
+//! Sub-agents navigate by absolute path via `kms_local`.
 
 use std::collections::HashMap;
 use std::sync::Arc;

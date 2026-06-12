@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::agent_panel;
+use agent_panel_tui as agent_panel;
 use crate::state::{App, ChatFocus, Panel};
 use crate::theme::Theme;
 use crate::widgets::SPINNER_FRAMES;
@@ -307,7 +307,8 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                     agent_panel::render_agent_panel(
                         f,
                         &app.agent_panel,
-                        theme,
+                        &*app.agent_panel_theme,
+                        &*app.agent_panel_tools,
                         inner,
                         app.spinner_tick,
                     );
@@ -319,7 +320,8 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
                 agent_panel::render_agent_panel(
                     f,
                     &app.agent_panel,
-                    theme,
+                    &*app.agent_panel_theme,
+                    &*app.agent_panel_tools,
                     sub_rect,
                     app.spinner_tick,
                 );

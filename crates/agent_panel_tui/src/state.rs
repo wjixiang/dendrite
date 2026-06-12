@@ -11,8 +11,8 @@ use agentik_core::process::ProcessEvent;
 use agentik_sdk::types::AgentEvent;
 use serde_json::Value;
 
-use crate::agent_panel::events::{apply_agent_event, map_agent_event};
-use crate::agent_panel::tools::tool_user_facing_name;
+use crate::events::{apply_agent_event, map_agent_event};
+use crate::tools::{tool_user_facing_name, AgentPanelTools};
 
 /// Layout hints passed from the per-frame sort/prioritization step
 /// to the per-row renderer. Carries enough context for the row
@@ -246,6 +246,13 @@ impl AgentPanelEntry {
     }
 
     pub fn activity_hint(&self) -> Option<String> {
+        self.activity_hint_with(&DefaultToolsBridge)
+    }
+
+    /// Like [`Self::activity_hint`] but lets the caller pass a
+    /// `&dyn AgentPanelTools` so the rendered label can come from
+    /// the host's own renderer instead of the built-in KMS list.
+    pub fn activity_hint_with(&self, tools: &dyn AgentPanelTools) -> Option<String> {
         if matches!(self.status, AgentEntryStatus::Failed { .. }) {
             return None;
         }
@@ -266,7 +273,7 @@ impl AgentPanelEntry {
         for ev in self.events.iter().rev() {
             match ev {
                 AgentPanelEvent::ToolCall { name, input } => {
-                    return Some(tool_user_facing_name(name, input));
+                    return Some(tools.user_facing_name(name, input));
                 }
                 AgentPanelEvent::ToolResult { ok: true, .. } => {
                     return Some("done".to_string());
@@ -314,4 +321,15 @@ impl AgentPanelEntry {
 #[allow(dead_code)]
 pub(crate) fn _hint(event: &AgentEvent) -> Option<AgentPanelEvent> {
     map_agent_event(event)
+}
+
+/// Zero-sized bridge used by `activity_hint()` (the no-arg variant)
+/// to keep the same body as `activity_hint_with`. Routes through the
+/// default tool-name renderer.
+struct DefaultToolsBridge;
+
+impl AgentPanelTools for DefaultToolsBridge {
+    fn user_facing_name(&self, name: &str, input: &serde_json::Value) -> String {
+        tool_user_facing_name(name, input)
+    }
 }

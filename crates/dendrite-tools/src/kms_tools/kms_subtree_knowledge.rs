@@ -7,7 +7,7 @@ use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 /// Stateless alternative to `kms_navigate` + `kms_get_entity_knowledge`
 /// for the case where the agent already knows which subtree to inspect.
 ///
-/// Use this when `kms_view_local`'s `subtree.knowledge_titles` is
+/// Use this when `kms_local`'s `subtree.knowledge_titles` is
 /// truncated (`truncated: true`) and the agent needs the full list.
 pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
@@ -15,7 +15,7 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
         "Stateless: list every knowledge entry inside the subtree rooted at `path`. \
          Each entry includes the title, knowledge type, and primary entity name. \
          \n\n\
-         Does NOT modify the global pointer. Path syntax matches `kms_view_local`.",
+         Does NOT modify the global pointer. Path syntax matches `kms_local`.",
     )
     .parameter(
         "path",

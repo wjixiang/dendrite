@@ -6,9 +6,17 @@ use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_delete_index",
-        "Delete an index node by its title. Cannot delete the root index. Children of the deleted node are reparented to the deleted node's parent.",
+        "Delete an EMPTY Group-type index node by its title. The call REFUSES \
+         to run in three cases — each protects against silent data loss: \
+         (1) the index has any children (move or delete them first via \
+         `kms_move_children` / `kms_move_index` / `kms_delete_index` / \
+         `kms_delete_knowledge`); \
+         (2) the index is a knowledge mount (`target_type=knowledge`) — \
+         use `kms_delete_knowledge` to remove the knowledge itself, or \
+         `kms_detach_knowledge` to temporarily unmount it; \
+         (3) the index is the root.",
     )
-    .parameter("title", "string", "Title of the index to delete")
+    .parameter("title", "string", "Title of the (empty, group-type) index to delete")
     .required("title")
     .build();
 

@@ -6,7 +6,10 @@ use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegistration {
     let definition = ToolBuilder::new(
         "kms_create_index",
-        "Create an index entry under a parent index. Indexes organize entities and knowledge.",
+        "Create an index entry under a parent index. Indexes organize entities and knowledge. \
+         The new index's `title` must be unique among the parent's direct children — the call \
+         fails with a duplicate-title error if a sibling already carries the same title (the \
+         same title is allowed under a different parent).",
     )
     .parameter("parent_ref", "string", "Title of parent index entry")
     .parameter("title", "string", "Title of this index entry")

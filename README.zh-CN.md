@@ -224,10 +224,10 @@ pub(crate) const READONLY_KMS_TOOLS: &[&str] = &[
 
 ### 索引(Index)相关
 
-- `kms_create_index` / `kms_delete_index` / `kms_move_index` / `kms_navigate`
-- `kms_reorganize_children`(把 N 个子节点按主题重新分组)
+- `kms_create_index` / `kms_delete_index` / `kms_move_index`（按 path 寻址：`index_path`、`new_parent_path`） / `kms_navigate`
+- `kms_move_children`(把 N 个子节点移到指定路径下的新分组里)
 - `kms_merge_subtree`(合并 staging subtree 到目标父节点)
-- `kms_view_local`(无状态局部视图,retrieval agent 首选)
+- `kms_local`(无状态局部视图,retrieval agent 首选)
 - `kms_subtree_knowledge` / `kms_search_subtree`
 
 ### 编排(Parallel)专用
@@ -240,7 +240,7 @@ pub(crate) const READONLY_KMS_TOOLS: &[&str] = &[
 
 ```
 kms_search_entity, kms_navigate, kms_get_entity, kms_get_entity_knowledge,
-kms_get_knowledge, kms_view_local, kms_subtree_knowledge, kms_search_subtree
+kms_get_knowledge, kms_local, kms_subtree_knowledge, kms_search_subtree
 ```
 
 ---

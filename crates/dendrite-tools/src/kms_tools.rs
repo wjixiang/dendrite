@@ -127,6 +127,7 @@ mod kms_delete_entity;
 mod kms_delete_index;
 mod kms_delete_knowledge;
 mod kms_delete_nomenclature;
+mod kms_detach_knowledge;
 mod kms_get_entity;
 mod kms_get_entity_knowledge;
 mod kms_get_knowledge;
@@ -136,14 +137,14 @@ mod kms_merge_subtree;
 mod kms_move_index;
 mod kms_parallel_dispatch;
 mod kms_rename_knowledge;
-mod kms_reorganize_children;
+mod kms_move_children;
 mod kms_search_entity;
 mod kms_search_subtree;
 mod kms_subtree_knowledge;
 mod kms_update_entity;
 mod kms_update_knowledge;
 mod kms_update_nomenclature;
-mod kms_view_local;
+mod kms_local;
 
 // ---------------------------------------------------------------------------
 // Aggregate registration functions
@@ -169,13 +170,14 @@ fn raw_registrations(
         kms_create_knowledge::registration(svc.clone(), corpus.clone()),
         kms_get_knowledge::registration(svc.clone()),
         kms_create_index::registration(svc.clone()),
-        kms_reorganize_children::registration(svc.clone()),
+        kms_move_children::registration(svc.clone()),
         kms_move_index::registration(svc.clone()),
         kms_link_orphans::registration(svc.clone()),
         kms_update_knowledge::registration(svc.clone()),
         kms_rename_knowledge::registration(svc.clone()),
         kms_delete_knowledge::registration(svc.clone()),
         kms_delete_index::registration(svc.clone()),
+        kms_detach_knowledge::registration(svc.clone()),
         kms_merge_subtree::registration(svc.clone()),
     ];
     // Corpus tools.
@@ -211,7 +213,7 @@ pub fn readonly_registrations(
         kms_get_entity::registration(svc.clone()),
         kms_get_entity_knowledge::registration(svc.clone()),
         kms_get_knowledge::registration(svc.clone()),
-        kms_view_local::registration(svc.clone()),
+        kms_local::registration(svc.clone()),
         kms_subtree_knowledge::registration(svc.clone()),
         kms_search_subtree::registration(svc),
     ];

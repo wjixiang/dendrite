@@ -1,18 +1,59 @@
 //! Tool-name → user-facing-string rendering.
 //!
-//! This is the one place that hard-codes KMS tool names. It's a
-//! deliberate trade-off: keeping the knowledge of "what `kms_view_local`
-//! means to a human" next to the renderer is convenient, and the
-//! renderer never has to fall back to a raw JSON dump. If a future
-//! host has different tool names, the cleanest path is to either
-//! (a) edit this file's `match` directly, or (b) introduce a
-//! `ToolNameRenderer` trait and parameterize [`render_agent_panel`]
-//! on it (see the B/C roadmap in `mod.rs`).
+//! The renderer is parameterized on `&dyn AgentPanelTools`, so any
+//! host can plug in its own renderer (or fall back to
+//! [`DefaultAgentPanelTools`], which carries the 20+ KMS-specific
+//! `kms_*` mappings the panel was built around).
 
 use serde_json::Value;
 
-/// Produce a short, human-readable label for a tool call. Falls
-/// back to "name key: value" or the raw name if the input is empty.
+/// Maps a `(tool_name, tool_input)` pair to a short, human-readable
+/// label suitable for the panel's row hint and the expanded event
+/// log. Implementations should fall back gracefully when the input
+/// shape is unknown.
+pub trait AgentPanelTools {
+    fn user_facing_name(&self, name: &str, input: &Value) -> String;
+}
+
+/// Default implementation that knows the KMS tool names. Hosts with
+/// a different tool set can either (a) construct this and call
+/// [`DefaultAgentPanelTools::with_extra`] to add their own rules, or
+/// (b) implement `AgentPanelTools` from scratch.
+#[derive(Debug, Clone, Default)]
+pub struct DefaultAgentPanelTools {
+    /// Extra rules tried first (so callers can override defaults).
+    /// The tuple is `(tool_name, input_pretty_label)`. We use a
+    /// pre-formatted string rather than a closure to keep this type
+    /// `Clone` and trivially `Box`-able.
+    #[allow(dead_code)]
+    extra: Vec<(String, String)>,
+}
+
+impl DefaultAgentPanelTools {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reserve room for the host to register custom tool names. Not
+    /// used today; kept as an extension point so a host that wants
+    /// to override a default can do so without re-implementing the
+    /// trait.
+    #[allow(dead_code)]
+    pub fn with_extra(_extra: Vec<(String, String)>) -> Self {
+        // Implementation deferred: see the note on the field above.
+        // When wiring this up, change the field from `#[allow(dead_code)]`
+        // to a real vector and prepend `_extra` to the lookup chain in
+        // `user_facing_name`.
+        Self::default()
+    }
+}
+
+impl AgentPanelTools for DefaultAgentPanelTools {
+    fn user_facing_name(&self, name: &str, input: &Value) -> String {
+        tool_user_facing_name(name, input)
+    }
+}
+
 pub(crate) fn tool_user_facing_name(name: &str, input: &Value) -> String {
     let first_str = |k: &str| -> Option<String> {
         input
@@ -37,7 +78,7 @@ pub(crate) fn tool_user_facing_name(name: &str, input: &Value) -> String {
     };
 
     match name {
-        "kms_view_local" => first_str("path").map(|p| format!("View {}", p)),
+        "kms_local" => first_str("path").map(|p| format!("Inspect {}", p)),
         "kms_create_knowledge" => {
             first_str("title").map(|t| format!("Create knowledge \"{}\"", truncate_inline(&t, 30)))
         }
@@ -69,7 +110,19 @@ pub(crate) fn tool_user_facing_name(name: &str, input: &Value) -> String {
         "kms_create_index" => {
             first_str("title").map(|t| format!("Create group \"{}\"", truncate_inline(&t, 30)))
         }
-        "kms_move_index" => first_id("id").map(|id| format!("Move group {}", id)),
+        "kms_move_index" => {
+            let from = first_str("index_path").unwrap_or_default();
+            let to = first_str("new_parent_path").unwrap_or_default();
+            if !from.is_empty() || !to.is_empty() {
+                Some(format!(
+                    "Move {} → under {}",
+                    truncate_inline(&from, 30),
+                    truncate_inline(&to, 30)
+                ))
+            } else {
+                Some("Move index".to_string())
+            }
+        }
         "kms_delete_index" => first_id("id").map(|id| format!("Delete group {}", id)),
         "kms_navigate" => {
             first_str("target").map(|t| format!("Navigate to {}", truncate_inline(&t, 30)))
@@ -80,8 +133,20 @@ pub(crate) fn tool_user_facing_name(name: &str, input: &Value) -> String {
         "kms_update_nomenclature" => first_id("id").map(|id| format!("Nomenclature update {}", id)),
         "kms_delete_nomenclature" => first_id("id").map(|id| format!("Nomenclature delete {}", id)),
         "kms_link_orphans" => Some("Link orphans".to_string()),
-        "kms_reorganize_children" => {
-            first_id("parent_id").map(|id| format!("Reorganize children of {}", id))
+        "kms_move_children" => {
+            let source = first_str("source_path").unwrap_or_default();
+            let remount = first_str("remount_path").unwrap_or_default();
+            let title = first_str("new_group_title").unwrap_or_default();
+            if !source.is_empty() || !remount.is_empty() || !title.is_empty() {
+                Some(format!(
+                    "Reorganize {} → group \"{}\" under {}",
+                    truncate_inline(&source, 24),
+                    truncate_inline(&title, 24),
+                    truncate_inline(&remount, 24)
+                ))
+            } else {
+                Some("Reorganize children".to_string())
+            }
         }
         "kms_merge_subtree" => {
             first_str("target").map(|t| format!("Merge subtree → {}", truncate_inline(&t, 30)))

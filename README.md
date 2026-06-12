@@ -226,10 +226,10 @@ All `kms_*` tools live under `crates/dendrite-tools/src/kms_tools/`, one file pe
 
 ### Index tools
 
-- `kms_create_index` / `kms_delete_index` / `kms_move_index` / `kms_navigate`
-- `kms_reorganize_children` — regroup N children by topic
+- `kms_create_index` / `kms_delete_index` / `kms_move_index` (path-based: `index_path`, `new_parent_path`) / `kms_navigate`
+- `kms_move_children` — move N children into a new grouping under a target path
 - `kms_merge_subtree` — merge a staging subtree into a target parent
-- `kms_view_local` — stateless local view; preferred by the retrieval agent
+- `kms_local` — stateless local view; preferred by the retrieval agent
 - `kms_subtree_knowledge` / `kms_search_subtree`
 
 ### Orchestration
@@ -242,7 +242,7 @@ All `kms_*` tools live under `crates/dendrite-tools/src/kms_tools/`, one file pe
 
 ```
 kms_search_entity, kms_navigate, kms_get_entity, kms_get_entity_knowledge,
-kms_get_knowledge, kms_view_local, kms_subtree_knowledge, kms_search_subtree
+kms_get_knowledge, kms_local, kms_subtree_knowledge, kms_search_subtree
 ```
 
 ---

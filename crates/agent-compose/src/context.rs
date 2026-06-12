@@ -6,7 +6,7 @@
 //! the version so the framework re-injects the updated snapshot into
 //! the agent's memory. Agents can also inspect the tree on demand via
 //! [`kms::KmsService::get_local_view_by_path`] (exposed as the
-//! `kms_view_local` tool). This mirrors
+//! `kms_local` tool). This mirrors
 //! [`agentik_knowledge::KnowledgeContext`](../../agent-knowledge/src/context.rs).
 
 use std::collections::HashMap;

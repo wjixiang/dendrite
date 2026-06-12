@@ -9,7 +9,7 @@ kms = { path = "../kms" }
 corpus = { path = "../corpus" }
 
 agentik-core = { path = "../agentik-core" }
-agentik-sdk = { git = "ssh://git@github.com/wjixiang/agentik-sdk.git", branch = "main" }
+agentik-sdk = { git = "https://github.com/wjixiang/agentik-sdk.git", branch = "main" }
 
 async-trait = { workspace = true }
 futures = "0.3"

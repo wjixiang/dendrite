@@ -6,13 +6,13 @@ use ratatui::text::Line;
 use ratatui::widgets::{ListItem, ListState};
 use tokio::sync::mpsc;
 
-use crate::agent_panel::AgentPanelState;
+use agent_panel_tui::{AgentPanelState, AgentPanelTheme, AgentPanelTools, DefaultAgentPanelTools};
+
+use crate::theme::Theme;
 use crate::chat::ChatMessage;
 use crate::components::toast::ToastManager;
 use crate::settings::{PoolEntry, ProviderConfig};
 use uuid::Uuid;
-
-use crate::theme::Theme;
 
 /// A paste entry awaiting submission. Either the full text is still
 /// held in memory (`content = Some`), or it has already been
@@ -338,6 +338,17 @@ pub struct App {
     /// State for the dedicated Agent Status panel.
     pub agent_panel: AgentPanelState,
 
+    /// Theme bridge the panel's renderer reads colors from. Wraps the
+    /// host's `Theme` so the panel sees a stable `&dyn AgentPanelTheme`
+    /// surface; the panel can therefore be reused by another TUI
+    /// without re-implementing the color mapping.
+    pub agent_panel_theme: Box<dyn AgentPanelTheme>,
+
+    /// Tool-name renderer used by the panel. Default impl carries the
+    /// KMS-specific `kms_*` mappings; a host with different tool
+    /// names can swap this for its own `impl AgentPanelTools`.
+    pub agent_panel_tools: Box<dyn AgentPanelTools>,
+
     /// Sub-focus within the Agent panel. Drives which sub-section
     /// (`Messages` vs the embedded `AgentsPanel`) gets key events
     /// when the Agent panel is the focused top-level panel.
@@ -478,6 +489,8 @@ impl App {
             process_event_rx: Some(process_event_rx),
             agent_titles,
             agent_panel: AgentPanelState::default(),
+            agent_panel_theme: Box::new(KmsThemeBridge(Theme::default_theme())),
+            agent_panel_tools: Box::new(DefaultAgentPanelTools::new()),
             chat_focus: ChatFocus::default(),
             last_tree_refresh_at: None,
             settings_modal_open: false,
@@ -731,5 +744,48 @@ impl App {
         }
 
         self.on_tree_select().await;
+    }
+}
+
+// ---- Theme bridge ----------------------------------------------------------
+//
+// The agent panel reads colors and styles through the
+// `AgentPanelTheme` trait. `kms_tui` already has a concrete `Theme`
+// type, so this zero-sized bridge just forwards every trait method
+// to the corresponding field on the wrapped `Theme`. A different
+// host would write a similar bridge for its own theme struct (or
+// fall back to `DefaultAgentPanelTheme` from `agent_panel_tui`).
+
+/// Bridges `kms_tui::Theme` to `agent_panel_tui::AgentPanelTheme`.
+#[derive(Debug, Clone, Copy)]
+pub struct KmsThemeBridge(pub Theme);
+
+impl AgentPanelTheme for KmsThemeBridge {
+    fn text_primary(&self) -> ratatui::style::Color {
+        self.0.text_primary
+    }
+    fn text_secondary(&self) -> ratatui::style::Color {
+        self.0.text_secondary
+    }
+    fn text_muted(&self) -> ratatui::style::Color {
+        self.0.text_muted
+    }
+    fn spinner_color(&self) -> ratatui::style::Color {
+        self.0.spinner
+    }
+    fn tool_ok(&self) -> ratatui::style::Color {
+        self.0.tool_ok
+    }
+    fn tool_err(&self) -> ratatui::style::Color {
+        self.0.tool_err
+    }
+    fn error_style(&self) -> ratatui::style::Style {
+        self.0.error_style()
+    }
+    fn success_style(&self) -> ratatui::style::Style {
+        self.0.success_style()
+    }
+    fn tool_call_bold_style(&self) -> ratatui::style::Style {
+        self.0.tool_call_bold_style()
     }
 }

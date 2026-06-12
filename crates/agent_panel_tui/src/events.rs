@@ -4,7 +4,7 @@
 use agentik_sdk::types::AgentEvent;
 use serde_json::Value;
 
-use crate::agent_panel::state::{AgentPanelEntry, AgentPanelEvent, MAX_EVENTS_PER_AGENT};
+use crate::state::{AgentPanelEntry, AgentPanelEvent, MAX_EVENTS_PER_AGENT};
 
 pub(crate) fn apply_agent_event(entry: &mut AgentPanelEntry, event: &AgentEvent) {
     match event {

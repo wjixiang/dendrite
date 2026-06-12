@@ -13,10 +13,10 @@ pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik_core::tools::Too
     )
     .parameter("doc_id", "string", "Document UUID.")
     .required("doc_id")
-    .parameter("chunk_index", "integer", "Centre chunk index.")
+    .parameter("chunk_index", "number", "Centre chunk index (non-negative integer).")
     .required("chunk_index")
-    .parameter("before", "integer", "Number of chunks before the centre (default 1).")
-    .parameter("after", "integer", "Number of chunks after the centre (default 1).")
+    .parameter("before", "number", "Number of chunks before the centre (default 1).")
+    .parameter("after", "number", "Number of chunks after the centre (default 1).")
     .build();
 
     agentik_core::tools::ToolRegistration::new(
@@ -25,9 +25,10 @@ pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik_core::tools::Too
             let svc = svc.clone();
             Box::pin(async move {
                 let doc_id_str = input["doc_id"].as_str().ok_or("missing 'doc_id'")?;
-                let chunk_index = input["chunk_index"].as_u64().ok_or("missing 'chunk_index'")? as usize;
-                let before = input["before"].as_u64().unwrap_or(1) as usize;
-                let after = input["after"].as_u64().unwrap_or(1) as usize;
+                let chunk_index = parse_usize(&input["chunk_index"], "chunk_index")
+                    .ok_or_else(|| "missing or invalid 'chunk_index'".to_string())?;
+                let before = parse_usize(&input["before"], "before").unwrap_or(1);
+                let after = parse_usize(&input["after"], "after").unwrap_or(1);
                 let doc_id = uuid::Uuid::parse_str(doc_id_str).map_err(|e| e.to_string())?;
 
                 let chunks = svc.get_document_chunk_window(doc_id, chunk_index, before, after).await?;
@@ -50,4 +51,26 @@ pub fn registration(svc: Arc<corpus::CorpusService>) -> agentik_core::tools::Too
         })),
         vec![],
     )
+}
+
+/// Parse a numeric JSON value as `usize`. Accepts both integer literals
+/// (`42`) and float literals that happen to be whole numbers (`42.0`).
+/// Returns `None` for missing or non-numeric values (so callers can fall
+/// back to a default) and `Some(Err)` is not used — explicit
+/// out-of-range / non-integer numerics also resolve to `None` and let
+/// the caller surface a generic error.
+fn parse_usize(value: &Value, field: &str) -> Option<usize> {
+    let _ = field;
+    if value.is_null() {
+        return None;
+    }
+    if let Some(n) = value.as_u64() {
+        return Some(n as usize);
+    }
+    if let Some(f) = value.as_f64() {
+        if f.is_finite() && f >= 0.0 && f <= usize::MAX as f64 && f.fract() == 0.0 {
+            return Some(f as usize);
+        }
+    }
+    None
 }
