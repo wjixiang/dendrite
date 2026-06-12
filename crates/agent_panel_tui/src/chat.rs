@@ -15,6 +15,8 @@
 
 pub mod events;
 pub mod input;
+pub mod mouse;
+pub mod paste;
 pub mod renderer;
 pub mod state;
 pub mod theme;
@@ -23,9 +25,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+pub use mouse::{ChatMouseOutcome, MouseEventKind, MouseButton};
+pub use paste::{PasteEntry, PASTE_SUMMARY_LEN_THRESHOLD, PASTE_SUMMARY_LINE_THRESHOLD};
 pub use state::ChatPanelState;
 pub use theme::{ChatPanelTheme, DefaultChatPanelTheme};
-
 const MAX_THINKING_LINES: usize = 10;
 const MAX_TOOL_RESULT_LINES: usize = 6;
 const MAX_ARRAY_ITEMS: usize = 8;

@@ -13,6 +13,7 @@ use std::hash::Hash;
 
 use ratatui::text::Line;
 
+use super::paste::PasteEntry;
 use super::ChatMessage;
 
 /// Monotonic version counter. Bumped on every mutation that could
@@ -78,6 +79,16 @@ pub struct ChatPanelState<K: Hash + Eq + Clone + Debug> {
     /// its `Line` cache on this so a stable frame is a free
     /// no-op.
     input_version: u64,
+
+    /// Parallel list of paste events referenced from `input`.
+    /// When the user pastes a short string, the content is
+    /// pushed directly into `input` and no entry is added (the
+    /// paste is "transparent"). When the user pastes a long
+    /// string, a `[Pasted ~N lines]` placeholder is pushed into
+    /// `input` and a [`PasteEntry`] is appended here carrying
+    /// the full content. `take_full_input_text` re-substitutes
+    /// these placeholders with the original text.
+    pastes: Vec<PasteEntry>,
 }
 
 impl<K: Hash + Eq + Clone + Debug> ChatPanelState<K> {
@@ -96,6 +107,7 @@ impl<K: Hash + Eq + Clone + Debug> ChatPanelState<K> {
             input: String::new(),
             input_active: false,
             input_version: 0,
+            pastes: Vec::new(),
         }
     }
 
@@ -284,11 +296,19 @@ impl<K: Hash + Eq + Clone + Debug> ChatPanelState<K> {
     /// Consume the input text, leaving the buffer empty. Used
     /// on Enter to hand the text to the submit pipeline. Bumps
     /// `input_version` so the cached `Line` is invalidated.
+    ///
+    /// The `pastes` list is also cleared — taking the input
+    /// means the placeholders are no longer referenced, so
+    /// their full content is no longer reachable from the chat
+    /// panel. Hosts that want the full content should call
+    /// [`take_full_input_text`](Self::take_full_input_text)
+    /// instead.
     pub fn take_input_text(&mut self) -> String {
-        if self.input.is_empty() {
+        if self.input.is_empty() && self.pastes.is_empty() {
             return String::new();
         }
         let out = std::mem::take(&mut self.input);
+        self.pastes.clear();
         self.bump_input_version();
         out
     }
@@ -299,11 +319,17 @@ impl<K: Hash + Eq + Clone + Debug> ChatPanelState<K> {
     /// host's key handler is responsible for the deactivation;
     /// this accessor is the building block for "clear text
     /// only".)
+    ///
+    /// Long-paste entries are also cleared — once the display
+    /// string is gone, there's nothing to expand them into.
     pub fn clear_input_text(&mut self) {
         if !self.input.is_empty() {
             self.input.clear();
-            self.bump_input_version();
         }
+        if !self.pastes.is_empty() {
+            self.pastes.clear();
+        }
+        self.bump_input_version();
     }
 
     /// Push a single typed character. Bumps `input_version`.
@@ -328,6 +354,107 @@ impl<K: Hash + Eq + Clone + Debug> ChatPanelState<K> {
         }
     }
 
+    /// Push a paste event into the input box.
+    ///
+    /// Short pastes (less than
+    /// [`PASTE_SUMMARY_LINE_THRESHOLD`](super::paste::PASTE_SUMMARY_LINE_THRESHOLD)
+    /// lines AND no more than
+    /// [`PASTE_SUMMARY_LEN_THRESHOLD`](super::paste::PASTE_SUMMARY_LEN_THRESHOLD)
+    /// characters) are inserted verbatim and *not* recorded in the
+    /// `pastes` list — the display string IS the full content.
+    ///
+    /// Long pastes are collapsed to a `[Pasted ~N lines]`
+    /// placeholder in the input box, and the full content is
+    /// stored in a [`PasteEntry`] inside the `pastes` list. The
+    /// placeholder is re-substituted back to the full content by
+    /// [`take_full_input_text`](Self::take_full_input_text).
+    ///
+    /// This is the recommended entry point for hosts forwarding
+    /// an `Event::Paste` from their terminal library; the
+    /// previous pattern of "host summarizes, host appends
+    /// placeholder, host stores content in a side list" is
+    /// redundant — the chat panel now owns both halves.
+    pub fn push_paste(&mut self, content: &str) {
+        if content.is_empty() {
+            return;
+        }
+        let entry = PasteEntry::from_content(content);
+        // `from_content` guarantees: short paste → placeholder
+        // == content (no expansion needed); long paste →
+        // placeholder is a `[Pasted ~N lines]` marker and the
+        // full content lives in `entry.content`.
+        //
+        // We always push `entry.placeholder` into the display
+        // string. For short pastes, that's the content itself,
+        // so no paste entry is needed for take_full_input_text
+        // to round-trip correctly — but we still record it so
+        // `pastes()` exposes the user's paste history (useful
+        // for the host to ingest as a document, etc.).
+        if entry.placeholder != entry.content {
+            self.pastes.push(entry.clone());
+        }
+        self.input.push_str(&entry.placeholder);
+        self.bump_input_version();
+    }
+
+    /// Take the current input text, expanding any long-paste
+    /// placeholders back to the original content. The `input`
+    /// string and the `pastes` list are both cleared.
+    ///
+    /// This is the function the host should call when the user
+    /// presses Enter on the input prompt. The placeholder text
+    /// is replaced with the full paste content, producing the
+    /// final text the LLM should see.
+    ///
+    /// Hosts that want the *display* text (with placeholders
+    /// intact, e.g. for chat history or for a custom "ingest as
+    /// document" pipeline) should use
+    /// [`take_input_text`](Self::take_input_text) and then walk
+    /// [`pastes`](Self::pastes) themselves.
+    pub fn take_full_input_text(&mut self) -> String {
+        let display = std::mem::take(&mut self.input);
+        let pastes = std::mem::take(&mut self.pastes);
+        self.bump_input_version();
+        if pastes.is_empty() {
+            return display;
+        }
+        // Substitute each placeholder with its content. We do
+        // this iteratively (one replacen per entry) so a paste
+        // entry whose content contains another placeholder
+        // doesn't get double-expanded.
+        //
+        // Edge case: if the user manually edited the display
+        // string and the placeholder is no longer present, the
+        // `contains` check skips the replacement. The orphan
+        // entry's content is dropped — that's fine, the user
+        // can't have meant to send it.
+        let mut out = display;
+        for entry in &pastes {
+            if out.contains(&entry.placeholder) {
+                out = out.replacen(&entry.placeholder, &entry.content, 1);
+            }
+        }
+        out
+    }
+
+    /// Borrow the list of long-paste entries currently held in
+    /// the input. Hosts use this to inspect or post-process
+    /// pastes (e.g. upload long pastes as documents) without
+    /// taking ownership.
+    pub fn pastes(&self) -> &[PasteEntry] {
+        &self.pastes
+    }
+
+    /// Drop all long-paste entries. Useful when the host has
+    /// processed them (e.g. uploaded as documents) and wants the
+    /// chat panel to forget about them. The display string is
+    /// not touched.
+    pub fn clear_pastes(&mut self) {
+        if !self.pastes.is_empty() {
+            self.pastes.clear();
+        }
+    }
+
     /// Current input version. The renderer compares this against
     /// its cached slot to decide whether to recompute the
     /// `Line`.
@@ -345,6 +472,7 @@ impl<K: Hash + Eq + Clone + Debug> ChatPanelState<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::paste::PASTE_SUMMARY_LEN_THRESHOLD;
 
     #[derive(Hash, Eq, PartialEq, Clone, Debug)]
     enum Tab {
@@ -444,5 +572,154 @@ mod tests {
         s.set_active(Tab::B);
         assert_eq!(s.current_messages().len(), 1);
         assert!(matches!(s.current_messages()[0], ChatMessage::Divider));
+    }
+
+    // ---- Paste handling ------------------------------------------------
+    //
+    // `push_paste` is the recommended entry point for hosts that
+    // forward `Event::Paste` from their terminal library. Short
+    // pastes are inserted verbatim; long pastes are collapsed to
+    // a `[Pasted ~N lines]` placeholder and a `PasteEntry` is
+    // recorded. `take_full_input_text` re-substitutes the
+    // placeholder with the original content at submit time.
+
+    #[test]
+    fn push_paste_short_paste_inserts_verbatim() {
+        let mut s = new_state();
+        s.push_paste("hello world");
+        assert_eq!(s.input_text(), "hello world");
+        // Short pastes: display == content, no entry needed.
+        assert!(s.pastes().is_empty());
+    }
+
+    #[test]
+    fn push_paste_long_paste_records_entry_and_placeholder() {
+        let mut s = new_state();
+        let content = "line one\nline two\nline three\nline four";
+        s.push_paste(content);
+        // Display: placeholder, not the full content.
+        assert_eq!(s.input_text(), "[Pasted ~4 lines]");
+        // One paste entry, content is the full original.
+        assert_eq!(s.pastes().len(), 1);
+        assert_eq!(s.pastes()[0].content, content);
+        assert_eq!(s.pastes()[0].placeholder, "[Pasted ~4 lines]");
+    }
+
+    #[test]
+    fn push_paste_long_single_line_uses_placeholder() {
+        let mut s = new_state();
+        let long = "a".repeat(PASTE_SUMMARY_LEN_THRESHOLD + 1);
+        s.push_paste(&long);
+        assert_eq!(s.input_text(), "[Pasted ~1 lines]");
+        assert_eq!(s.pastes().len(), 1);
+        assert_eq!(s.pastes()[0].content, long);
+    }
+
+    #[test]
+    fn push_paste_empty_is_no_op() {
+        let mut s = new_state();
+        let v0 = s.input_version();
+        s.push_paste("");
+        assert_eq!(s.input_text(), "");
+        assert!(s.pastes().is_empty());
+        // Empty paste must NOT bump the input version — it's a
+        // no-op for both display and pastes.
+        assert_eq!(s.input_version(), v0);
+    }
+
+    #[test]
+    fn push_paste_bumps_input_version() {
+        let mut s = new_state();
+        let v0 = s.input_version();
+        s.push_paste("anything");
+        assert_ne!(s.input_version(), v0);
+    }
+
+    #[test]
+    fn take_full_input_text_returns_verbatim_when_no_pastes() {
+        let mut s = new_state();
+        s.push_input_str("hello world");
+        let out = s.take_full_input_text();
+        assert_eq!(out, "hello world");
+        // Buffer is drained.
+        assert_eq!(s.input_text(), "");
+        assert!(s.pastes().is_empty());
+    }
+
+    #[test]
+    fn take_full_input_text_expands_long_paste() {
+        let mut s = new_state();
+        let content = "line one\nline two\nline three\nline four";
+        s.push_paste(content);
+        // The visible buffer is the placeholder.
+        assert_eq!(s.input_text(), "[Pasted ~4 lines]");
+        // `take_full_input_text` returns the full content.
+        assert_eq!(s.take_full_input_text(), content);
+        // Buffer and paste list are both drained.
+        assert_eq!(s.input_text(), "");
+        assert!(s.pastes().is_empty());
+    }
+
+    #[test]
+    fn take_full_input_text_mixes_typed_and_pasted_segments() {
+        let mut s = new_state();
+        // Type some prefix.
+        s.push_input_char('h');
+        s.push_input_char('i');
+        s.push_input_char(' ');
+        // Paste long content.
+        let pasted = "alpha\nbeta\ngamma\ndelta";
+        s.push_paste(pasted);
+        // Type some suffix.
+        s.push_input_str(" bye");
+        // Visible buffer: "hi [Pasted ~4 lines] bye".
+        assert_eq!(s.input_text(), "hi [Pasted ~4 lines] bye");
+        // Expansion gives: "hi <content> bye".
+        assert_eq!(s.take_full_input_text(), format!("hi {pasted} bye"));
+    }
+
+    #[test]
+    fn take_full_input_text_handles_multiple_pastes() {
+        let mut s = new_state();
+        let a = "x\ny\nz\nw";
+        let b = "1\n2\n3\n4\n5";
+        s.push_paste(a);
+        s.push_paste(b);
+        assert_eq!(s.input_text(), "[Pasted ~4 lines][Pasted ~5 lines]");
+        assert_eq!(s.take_full_input_text(), format!("{a}{b}"));
+    }
+
+    #[test]
+    fn take_input_text_does_not_expand_placeholders() {
+        // The `take_input_text` path is the host's escape hatch
+        // for custom pipelines (e.g. document ingestion). It
+        // returns the placeholder text verbatim, but still
+        // drains the paste list.
+        let mut s = new_state();
+        s.push_paste("a\nb\nc\nd");
+        let display = s.take_input_text();
+        assert_eq!(display, "[Pasted ~4 lines]");
+        assert!(s.pastes().is_empty());
+        assert_eq!(s.input_text(), "");
+    }
+
+    #[test]
+    fn clear_input_text_drains_pastes() {
+        let mut s = new_state();
+        s.push_paste("a\nb\nc\nd");
+        s.push_input_str(" trailing");
+        s.clear_input_text();
+        assert_eq!(s.input_text(), "");
+        assert!(s.pastes().is_empty());
+    }
+
+    #[test]
+    fn clear_pastes_does_not_touch_display() {
+        let mut s = new_state();
+        s.push_paste("a\nb\nc\nd");
+        s.clear_pastes();
+        // Display still has the placeholder.
+        assert_eq!(s.input_text(), "[Pasted ~4 lines]");
+        assert!(s.pastes().is_empty());
     }
 }

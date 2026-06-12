@@ -23,6 +23,67 @@ pub struct MoveChildrenResult {
     /// `Group`-typed child with the same title was reused.
     pub group_created: bool,
 }
+
+/// Per-title outcome of a `KmsService::get_knowledge_batch` call.
+///
+/// The list returned by `get_knowledge_batch` contains one of these
+/// per input title, in the same order. `NotFound` is **not** an error —
+/// the batch as a whole succeeds; only the individual title is missing.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchKnowledgeResult {
+    pub title: String,
+    pub status: BatchStatus,
+    pub knowledge: Option<KnowledgeView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchStatus {
+    Ok,
+    NotFound,
+}
+
+/// One hit from `KmsService::search_knowledge_content`: a knowledge
+/// entry whose body text matched the query, plus a short snippet
+/// around the first match and the total number of occurrences.
+#[derive(Debug, Clone, Serialize)]
+pub struct KnowledgeContentHit {
+    pub knowledge: KnowledgeView,
+    pub snippet: String,
+    pub match_count: usize,
+}
+
+/// Serializable, agent-facing projection of a `Knowledge` row.
+///
+/// `storage::types::Knowledge` does not derive `Clone`/`Serialize` (to
+/// keep the storage layer minimal), so the service layer wraps it in
+/// this slim view before crossing the tool / agent boundary. Anything
+/// the LLM needs about a knowledge entry is on this struct.
+#[derive(Debug, Clone, Serialize)]
+pub struct KnowledgeView {
+    pub id: Uuid,
+    pub title: String,
+    pub knowledge_type: String,
+    pub entities: Vec<Uuid>,
+    pub content: Option<String>,
+    pub source_document_id: Option<Uuid>,
+    pub source_chunk_idx: Option<i64>,
+}
+
+impl From<Knowledge> for KnowledgeView {
+    fn from(k: Knowledge) -> Self {
+        Self {
+            id: k.id,
+            title: k.title,
+            knowledge_type: k.knowledge_type.as_str().to_string(),
+            entities: k.entities,
+            content: k.content,
+            source_document_id: k.source_document_id,
+            source_chunk_idx: k.source_chunk_idx,
+        }
+    }
+}
+
 use crate::view::{IndexView, LocalView, SUBTREE_TITLES_LIMIT};
 
 use crate::Diagnostic;
@@ -400,6 +461,43 @@ impl KmsService {
             .get(id)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Batch-resolve a list of knowledge titles to their full entries.
+    ///
+    /// One input title → one `BatchKnowledgeResult`, in the same order.
+    /// Missing or unresolvable titles are returned with `status = NotFound`
+    /// (no error is raised for the batch). The LLM can use this to
+    /// fan-in N related knowledges in a single round trip without N
+    /// separate `kms_get_knowledge` calls.
+    pub async fn get_knowledge_batch(
+        &self,
+        titles: Vec<String>,
+    ) -> Result<Vec<BatchKnowledgeResult>, String> {
+        let mut out = Vec::with_capacity(titles.len());
+        for title in titles {
+            let entry = match self.resolve_knowledge(&title).await {
+                Ok(id) => match self.get_knowledge(id).await {
+                    Ok(k) => BatchKnowledgeResult {
+                        title,
+                        status: BatchStatus::Ok,
+                        knowledge: Some(k.into()),
+                    },
+                    Err(_) => BatchKnowledgeResult {
+                        title,
+                        status: BatchStatus::NotFound,
+                        knowledge: None,
+                    },
+                },
+                Err(_) => BatchKnowledgeResult {
+                    title,
+                    status: BatchStatus::NotFound,
+                    knowledge: None,
+                },
+            };
+            out.push(entry);
+        }
+        Ok(out)
     }
 
     pub async fn create_index_root(&self, title: &str) -> Result<Index, String> {
@@ -1601,6 +1699,48 @@ impl KmsService {
             .collect())
     }
 
+    /// Return knowledge entries inside the subtree rooted at `node_id`
+    /// whose CONTENT contains `keyword` (case-insensitive substring),
+    /// ranked by occurrence count and capped at `top_k`.
+    ///
+    /// This complements `search_knowledge_titles`: the latter only sees
+    /// titles, this one sees body text. Knowledge entries with no
+    /// content (`content = None`) are skipped.
+    pub async fn search_knowledge_content(
+        &self,
+        node_id: Uuid,
+        keyword: &str,
+        top_k: usize,
+    ) -> Result<Vec<KnowledgeContentHit>, String> {
+        let all = self.get_subtree_knowledge(node_id).await?;
+        let kw = keyword.to_lowercase();
+        let mut hits: Vec<KnowledgeContentHit> = all
+            .into_iter()
+            .filter_map(|k| {
+                let content = k.content.as_ref()?;
+                let lower = content.to_lowercase();
+                let count = lower.matches(&kw).count();
+                if count == 0 {
+                    return None;
+                }
+                let snippet = extract_content_snippet(content, &lower, &kw, 200);
+                Some(KnowledgeContentHit {
+                    knowledge: k.into(),
+                    snippet,
+                    match_count: count,
+                })
+            })
+            .collect();
+        // rank: more matches first, then title for stability
+        hits.sort_by(|a, b| {
+            b.match_count
+                .cmp(&a.match_count)
+                .then_with(|| a.knowledge.title.cmp(&b.knowledge.title))
+        });
+        hits.truncate(top_k);
+        Ok(hits)
+    }
+
     /// Internal helper: resolve a navigate-style path string to a node
     /// id without mutating the global pointer. Mirrors the resolution
     /// logic of [`navigate`](Self::navigate) but discards any stateful
@@ -2454,6 +2594,205 @@ mod tests {
         assert!(empty.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_search_knowledge_content_basic() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("Root").await.unwrap();
+        let (e, _) = svc
+            .create_entity(vec![make_name("测试实体")], "定义")
+            .await
+            .unwrap();
+
+        // Two knowledges under root: one with content, one without.
+        let k1 = svc
+            .create_knowledge(
+                "ACEI · 用药",
+                KnowledgeType::Aspect,
+                vec![e.id],
+                Some("ACEI 类药物是治疗心力衰竭的一线选择，能降低死亡率。".to_string()),
+            )
+            .await
+            .unwrap();
+        let k2 = svc
+            .create_knowledge(
+                "无内容条目",
+                KnowledgeType::Aspect,
+                vec![e.id],
+                None,
+            )
+            .await
+            .unwrap();
+        svc.create_index(
+            root.id,
+            Some("用药".into()),
+            Some(k1.id),
+            Some(TargetType::Knowledge),
+        )
+        .await
+        .unwrap();
+        svc.create_index(
+            root.id,
+            Some("空条目".into()),
+            Some(k2.id),
+            Some(TargetType::Knowledge),
+        )
+        .await
+        .unwrap();
+
+        let hits = svc
+            .search_knowledge_content(root.id, "acei", 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1, "only k1 has content");
+        assert_eq!(hits[0].knowledge.title, "ACEI · 用药");
+        assert_eq!(hits[0].match_count, 1);
+        assert!(hits[0].snippet.contains("ACEI"));
+    }
+
+    #[tokio::test]
+    async fn test_search_knowledge_content_ranks_by_count() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("Root").await.unwrap();
+        let (e, _) = svc
+            .create_entity(vec![make_name("X")], "")
+            .await
+            .unwrap();
+
+        let low = svc
+            .create_knowledge(
+                "低命中",
+                KnowledgeType::Aspect,
+                vec![e.id],
+                Some("提到一次心力衰竭。".to_string()),
+            )
+            .await
+            .unwrap();
+        let high = svc
+            .create_knowledge(
+                "高命中",
+                KnowledgeType::Aspect,
+                vec![e.id],
+                Some(
+                    "心力衰竭 心力衰竭 心力衰竭 心力衰竭 心力衰竭 — 这条命中五次。".to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        svc.create_index(root.id, Some("a".into()), Some(low.id), Some(TargetType::Knowledge))
+            .await
+            .unwrap();
+        svc.create_index(root.id, Some("b".into()), Some(high.id), Some(TargetType::Knowledge))
+            .await
+            .unwrap();
+
+        let hits = svc
+            .search_knowledge_content(root.id, "心力衰竭", 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].knowledge.title, "高命中");
+        assert_eq!(hits[0].match_count, 5);
+        assert_eq!(hits[1].knowledge.title, "低命中");
+        assert_eq!(hits[1].match_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_knowledge_content_top_k() {
+        let svc = setup_service().await;
+        let root = svc.create_index_root("Root").await.unwrap();
+        let (e, _) = svc
+            .create_entity(vec![make_name("X")], "")
+            .await
+            .unwrap();
+
+        for i in 0..5 {
+            let k = svc
+                .create_knowledge(
+                    &format!("条目{i}"),
+                    KnowledgeType::Aspect,
+                    vec![e.id],
+                    Some(format!("内容包含关键词 {i}")),
+                )
+                .await
+                .unwrap();
+            svc.create_index(
+                root.id,
+                Some(format!("k{i}")),
+                Some(k.id),
+                Some(TargetType::Knowledge),
+            )
+            .await
+            .unwrap();
+        }
+
+        let hits = svc
+            .search_knowledge_content(root.id, "关键词", 3)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 3, "top_k should cap results");
+    }
+
+    #[tokio::test]
+    async fn test_get_knowledge_batch_ok_and_not_found() {
+        let svc = setup_service().await;
+        let _tree = build_sample_tree(&svc).await;
+
+        let results = svc
+            .get_knowledge_batch(vec![
+                "A · 病因".to_string(),
+                "完全不存在的标题".to_string(),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "A · 病因");
+        assert_eq!(results[0].status, BatchStatus::Ok);
+        assert!(results[0].knowledge.is_some());
+        assert_eq!(results[0].knowledge.as_ref().unwrap().title, "A · 病因");
+
+        assert_eq!(results[1].title, "完全不存在的标题");
+        assert_eq!(results[1].status, BatchStatus::NotFound);
+        assert!(results[1].knowledge.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_knowledge_batch_preserves_input_order() {
+        let svc = setup_service().await;
+        let _tree = build_sample_tree(&svc).await;
+
+        let results = svc
+            .get_knowledge_batch(vec![
+                "zzz-does-not-exist".to_string(),
+                "A · 病因".to_string(),
+                "another-missing".to_string(),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].status, BatchStatus::NotFound);
+        assert_eq!(results[1].status, BatchStatus::Ok);
+        assert_eq!(results[2].status, BatchStatus::NotFound);
+    }
+
+    #[test]
+    fn extract_content_snippet_returns_match_window() {
+        let content = "前置无关注内容。心力衰竭的药物治疗包括 ACEI 和 β受体阻滞剂。";
+        let lower = content.to_lowercase();
+        let snippet = extract_content_snippet(content, &lower, "心力衰竭", 30);
+        assert!(snippet.starts_with("心力衰竭"));
+        assert!(snippet.contains("ACEI"));
+    }
+
+    #[test]
+    fn extract_content_snippet_falls_back_to_head_when_no_match() {
+        let content = "没有命中关键词的纯文本。";
+        let lower = content.to_lowercase();
+        let snippet = extract_content_snippet(content, &lower, "心力衰竭", 5);
+        assert_eq!(snippet, "没有命中关");
+    }
+
     // ---------- parallel-subtree tests ----------
 
     #[tokio::test]
@@ -2896,4 +3235,33 @@ impl KmsService {
     pub(crate) async fn set_pointer_for_test(&self, id: Uuid) {
         *self.inner.pointer.write().await = id;
     }
+}
+
+/// Build a short snippet around the first match of `lower_kw` inside
+/// `lower`, returning at most `max_chars` Unicode characters of the
+/// *original* (un-lowered) `content`.
+///
+/// `lower` must be `content.to_lowercase()`. `lower_kw` must be the
+/// already-lowercased keyword. The snippet starts at the first match
+/// in the lowercased content; the returned characters come from the
+/// original casing. If no match exists in `lower`, returns the first
+/// `max_chars` of `content` unchanged.
+fn extract_content_snippet(
+    content: &str,
+    lower: &str,
+    lower_kw: &str,
+    max_chars: usize,
+) -> String {
+    let Some(start_byte) = lower.find(lower_kw) else {
+        return content.chars().take(max_chars).collect();
+    };
+    // Map a byte index in `lower` to the corresponding char index in
+    // `content`. We walk both strings in lockstep; for ASCII keywords
+    // this is exact, for unicode case-folding the offset is at most a
+    // few chars off — acceptable for an agent-facing snippet.
+    let char_idx = lower
+        .char_indices()
+        .position(|(b, _)| b == start_byte)
+        .unwrap_or_else(|| content.chars().count());
+    content.chars().skip(char_idx).take(max_chars).collect()
 }

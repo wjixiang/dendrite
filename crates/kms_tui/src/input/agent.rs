@@ -8,8 +8,6 @@ use agentik_sdk::types::messages::ContentBlock;
 use agent_panel_tui::ChatMessage;
 use crate::state::{AgentKind, App};
 
-use super::paste;
-
 /// Rebuild all three agents with the given model pool and service reference.
 pub async fn rebuild_all_agents(
     app: &mut App,
@@ -161,110 +159,80 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
         expanded = rebuilt;
     }
 
-    // 2. Build replacement list from paste entries and file entries.
-    let mut replacements: Vec<(String, String)> = Vec::new();
-    for entry in &app.agent_pastes {
-        match &entry.content {
-            Some(content) if paste::should_ingest_as_document(content) => {
-                // Long content — keep for ingestion, placeholder will be
-                // replaced with doc ref after ingest.
-                replacements.push((entry.placeholder.clone(), content.clone()));
-            }
-            None => {
-                // Already ingested — use placeholder as-is (it already
-                // says [doc:uuid, uploaded]).
-                replacements.push((entry.placeholder.clone(), entry.placeholder.clone()));
-            }
-            _ => {
-                // Short paste (content = Some, but below threshold).
-                replacements.push((entry.placeholder.clone(), entry.placeholder.clone()));
-            }
+    // 2. Pull paste entries from the chat panel. The chat panel
+    //    is now the single source of truth for paste content —
+    //    `app.agent_pastes` is gone. Short pastes are inserted
+    //    verbatim into the input display and have no entry here;
+    //    long pastes have a `[Pasted ~N lines]` placeholder in
+    //    `expanded` and the full content in this list.
+    let pastes: Vec<agent_panel_tui::PasteEntry> =
+        app.chat_panel.pastes().to_vec();
+
+    // 3. Build the ingest queue: every long paste, plus every
+    //    long @file. The placeholder is what we'll search for
+    //    in the model text; the content is what we upload.
+    let mut ingest_queue: Vec<(String, String)> = Vec::new();
+    for entry in &pastes {
+        if agent_panel_tui::PASTE_SUMMARY_LINE_THRESHOLD
+            <= entry.content.lines().count().max(1)
+            || entry.content.chars().count() > agent_panel_tui::PASTE_SUMMARY_LEN_THRESHOLD
+        {
+            ingest_queue.push((entry.placeholder.clone(), entry.content.clone()));
         }
     }
-    // File entries that are long enough to ingest.
     for (placeholder, content) in &file_entries {
-        if paste::should_ingest_as_document(content) {
-            replacements.push((placeholder.clone(), content.clone()));
-        } else {
-            replacements.push((placeholder.clone(), placeholder.clone()));
+        if agent_panel_tui::PASTE_SUMMARY_LINE_THRESHOLD
+            <= content.lines().count().max(1)
+            || content.chars().count() > agent_panel_tui::PASTE_SUMMARY_LEN_THRESHOLD
+        {
+            ingest_queue.push((placeholder.clone(), content.clone()));
         }
     }
 
-    // 3. Build the text for chat history — always use compact
-    //    placeholders, never full text.
-    let mut display_text = user_input.clone();
-    for (placeholder, replacement) in &replacements {
-        if display_text.contains(placeholder) {
-            display_text = display_text.replacen(placeholder, replacement, 1);
-        }
-    }
+    // 4. `display_text` is what the chat history shows: the
+    //    input as the user composed it, with placeholders
+    //    intact. Both long pastes and long @file references
+    //    appear as their placeholder strings; the full content
+    //    lives only in `ingest_queue` (and, for pastes, in the
+    //    chat panel until `take_full_input_text` is called).
+    let display_text = expanded.clone();
 
-    // 4. Build the text for the LLM — for long content that was
-    //    ingested, we DON'T expand; instead we'll do the ingestion
-    //    in a blocking step first, then replace in the model text.
+    // 5. Build the model text. Start from the same `expanded`
+    //    string (which already has @file placeholders), then
+    //    replace each ingest placeholder with a doc pointer.
+    //    Short pastes are already verbatim in `expanded`, so
+    //    no replacement is needed for them.
     let mut model_text = expanded;
-    let mut ingest_queue: Vec<String> = Vec::new();
-    for (placeholder, content) in &replacements {
-        if !model_text.contains(placeholder) {
-            continue;
-        }
-        let is_long = paste::should_ingest_as_document(content);
-        if is_long {
-            // Remove the full content and replace with a temporary
-            // marker. We'll do the actual DB ingest next, then
-            // substitute the marker with a proper doc placeholder.
-            let marker = format!("\x00INGEST:{placeholder}\x00");
-            ingest_queue.push(content.clone());
-            model_text = model_text.replacen(placeholder, &marker, 1);
-        }
-        // Short content stays in model_text as-is (it IS the
-        // placeholder, which is compact).
-    }
 
-    // 5. Perform ingestion synchronously (it's fast: just DB writes).
-    //    The agent doesn't start until we're done.
+    // 6. Perform ingestion synchronously (it's fast: just DB
+    //    writes). The agent doesn't start until we're done.
     let corpus = app.corpus.clone();
     let corpus_inner = corpus.clone();
     let ingest_items = ingest_queue.clone();
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            for content in &ingest_items {
+            for (_placeholder, content) in &ingest_items {
                 let title = generate_paste_title(content);
                 let _ = corpus_inner.ingest_document(&title, None, content).await;
             }
         });
     });
 
-    // 6. Replace markers with proper doc placeholders in model_text.
-    //    We ingest long content; if successful the KmsService has it.
-    //    But the simpler approach: just put a lightweight note.
-    //    The agent already has available_documents injected at init,
-    //    so we just need a short pointer.
-    for content in &ingest_queue {
-        let marker = format!("\x00INGEST:");
-        let end_marker = format!("\x00");
-        // Find and replace markers. We stored the content, so we
-        // can match on a substring.
-        while let Some(pos) = model_text.find(&marker) {
-            let rest = &model_text[pos + marker.len()..];
-            if let Some(end) = rest.find(&end_marker) {
-                let title = generate_paste_title(content);
-                model_text = format!(
-                    "{}[长文本已上传「{}」为文档，使用 corpus_search / corpus_get_window 按需读取]{}",
-                    &model_text[..pos],
-                    title,
-                    &rest[end + end_marker.len()..],
-                );
-            } else {
-                break;
-            }
+    // 7. Replace each ingest placeholder with a doc pointer
+    //    telling the agent how to retrieve the full content
+    //    via corpus_search / corpus_get_window.
+    for (placeholder, content) in &ingest_queue {
+        if !model_text.contains(placeholder) {
+            continue;
         }
+        let title = generate_paste_title(content);
+        let pointer = format!(
+            "[长文本已上传「{}」为文档，使用 corpus_search / corpus_get_window 按需读取]",
+            title,
+        );
+        model_text = model_text.replacen(placeholder, &pointer, 1);
     }
-
-    // Also expand any remaining short paste placeholders (these are
-    // already compact, just ensure they're in model_text).
-    // (They were already there — no action needed.)
 
     let kind = app.agent_kind;
     app.agent_messages_mut().push(ChatMessage::User {

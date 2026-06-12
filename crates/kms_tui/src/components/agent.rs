@@ -60,6 +60,16 @@ pub fn render_agent(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
     //
     // We split the area *before* drawing the border so the inner
     // sections sit cleanly under one outer frame.
+    //
+    // Cache the area for the mouse dispatcher: the chat
+    // panel's `handle_chat_mouse_event` needs to know the
+    // chat's on-screen rect to decide whether a wheel event
+    // is over it. We cache the *outer* area (including the
+    // border) here; the host can pass it straight to
+    // `handle_chat_mouse_event`, which uses it as a hit-test
+    // box.
+    app.last_agent_area = Some(area);
+
     let sub_agent_count = app.agent_panel.agents.len();
     let show_sub_agents = sub_agent_count > 0;
 

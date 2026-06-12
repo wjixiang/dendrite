@@ -16,7 +16,7 @@ use agent_compose::ParallelComposeContext;
 use agent_knowledge::KnowledgeContext;
 use agentik_sdk::model::model_pool::ModelPool;
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -229,6 +229,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_model_pool(pool_arc.clone())
             .with_context(knowledge_ctx)
             .with_system_prompt_section(agent_knowledge::KNOWLEDGE_RETRIEVAL_PROMPT)
+            .with_config(agentik_core::AgentConfig {
+                max_iterations: 24,
+                max_retries: 5,
+            })
             .with_tools(dendrite_tools::readonly_registrations(
                 Arc::new(svc.clone()),
                 corpus.clone(),
@@ -294,7 +298,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
 
@@ -379,7 +388,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = run_app(&mut terminal, &mut app).await;
 
-    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     disable_raw_mode()?;
     terminal.show_cursor()?;
 

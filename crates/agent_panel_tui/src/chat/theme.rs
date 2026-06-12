@@ -58,6 +58,20 @@ pub trait ChatPanelTheme {
     /// Style for the success / done line.
     fn success_style(&self) -> Style;
 
+    // ---- Scrollbar ----
+
+    /// Style for the scrollbar thumb (the "█" the user drags).
+    /// Default: `Style::default().fg(text_muted())`.
+    fn scrollbar_thumb_style(&self) -> Style {
+        Style::default().fg(self.text_muted())
+    }
+
+    /// Style for the scrollbar track (the empty cells the thumb
+    /// slides through). Default: `Style::default()`.
+    fn scrollbar_track_style(&self) -> Style {
+        Style::default()
+    }
+
     // ---- String prefixes ----
 
     fn user_prefix(&self) -> &'static str;

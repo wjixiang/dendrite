@@ -1,18 +1,15 @@
 mod agent;
 mod keys;
-mod paste;
 #[cfg(test)]
 mod tests;
 
 pub use agent::spawn_agent_task;
 pub use keys::handle_key_event;
-pub use paste::should_ingest_as_document;
-pub use paste::summarize_paste;
 
 use std::time::Duration;
 
 use agentik_sdk::types::AgentEvent;
-use crossterm::event::Event;
+use crossterm::event::{Event, MouseButton as CtMouseButton, MouseEventKind as CtMouseEventKind};
 use ratatui::Terminal;
 
 use crate::state::{Action, App, Panel, SettingsPane};
@@ -450,16 +447,75 @@ pub async fn run_app(
                             && !app.agent_running =>
                     {
                         had_input = true;
-                        if let Some(placeholder) = summarize_paste(&s) {
-                            app.agent_pastes.push(crate::state::PasteEntry {
-                                placeholder: placeholder.clone(),
-                                display: placeholder.clone(),
-                                content: Some(s),
-                                doc_id: None,
-                            });
-                            app.agent_input_mut().push_str(&placeholder);
-                        } else {
-                            app.agent_input_mut().push_str(&s);
+                        // `chat_panel.push_paste` owns the
+                        // placeholder/verbatim decision: short
+                        // pastes are inserted verbatim, long
+                        // pastes are collapsed to a
+                        // `[Pasted ~N lines]` marker with the
+                        // full content held in a `PasteEntry`
+                        // for later expansion by
+                        // `take_full_input_text`. The kms_tui
+                        // host no longer needs to maintain a
+                        // separate `agent_pastes` list.
+                        app.chat_panel.push_paste(&s);
+                    }
+                    Event::Mouse(mouse) => {
+                        // Forward to the chat panel's mouse
+                        // handler. The chat panel returns
+                        // `Handled` when the event is over
+        // its area (or the scrollbar) and we should
+                        // mark the frame dirty; `Ignored`
+                        // when the click was elsewhere and
+                        // other panels might want it (e.g.
+                        // the diagnostics pane).
+                        had_input = true;
+                        if let Some(chat_area) = app.last_agent_area {
+                            let kind = match mouse.kind {
+                                CtMouseEventKind::ScrollUp => {
+                                    agent_panel_tui::MouseEventKind::ScrollUp
+                                }
+                                CtMouseEventKind::ScrollDown => {
+                                    agent_panel_tui::MouseEventKind::ScrollDown
+                                }
+                                CtMouseEventKind::Down(CtMouseButton::Left) => {
+                                    agent_panel_tui::MouseEventKind::Down(
+                                        agent_panel_tui::MouseButton::Left,
+                                    )
+                                }
+                                CtMouseEventKind::Down(_) => {
+                                    agent_panel_tui::MouseEventKind::Down(
+                                        agent_panel_tui::MouseButton::Other,
+                                    )
+                                }
+                                _ => agent_panel_tui::MouseEventKind::Other,
+                            };
+                            // 1 row per wheel notch feels
+                            // right for a TUI; the host can
+                            // swap to 3 for a high-resolution
+                            // wheel without changing the
+                            // handler.
+                            const SCROLL_AMOUNT: u16 = 1;
+                            let outcome = agent_panel_tui::handle_chat_mouse_event(
+                                &mut app.chat_panel,
+                                mouse.column,
+                                mouse.row,
+                                kind,
+                                chat_area,
+                                SCROLL_AMOUNT,
+                                // We don't track the
+                                // post-wrap row count at the
+                                // host level (it lives in
+                                // the chat panel's render
+                                // cache). Passing 0 here
+                                // degrades the scrollbar
+                                // click-to-jump shortcut to
+                                // a no-op; wheel scroll
+                                // still works.
+                                0,
+                            );
+                            if outcome == agent_panel_tui::ChatMouseOutcome::Handled {
+                                app.needs_render = true;
+                            }
                         }
                     }
                     _ => {}

@@ -14,22 +14,6 @@ use agent_panel_tui::{
 use crate::theme::Theme;
 use crate::components::toast::ToastManager;
 use crate::settings::{PoolEntry, ProviderConfig};
-use uuid::Uuid;
-
-/// A paste entry awaiting submission. Either the full text is still
-/// held in memory (`content = Some`), or it has already been
-/// uploaded as a document (`content = None`, `doc_id = Some`).
-#[derive(Debug, Clone)]
-pub struct PasteEntry {
-    /// Short text shown in the input area and chat history.
-    pub placeholder: String,
-    /// Text shown in chat history (always compact, never full text).
-    pub display: String,
-    /// Full text of the paste, if not yet ingested as a document.
-    pub content: Option<String>,
-    /// Document UUID, if the content has been uploaded.
-    pub doc_id: Option<Uuid>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentKind {
@@ -314,14 +298,6 @@ pub struct App {
     /// many tokens the LLM has generated so far.
     pub agent_usage_tokens: Option<u64>,
 
-    /// Side-channel for paste entries. Each entry either holds the
-    /// full text (to be ingested as a document at submit time) or has
-    /// already been uploaded (content=None, doc_id=Some). The
-    /// placeholder text of each entry is what gets pushed into the
-    /// chat panel's input buffer; the actual content is consumed at
-    /// submit time by `spawn_agent_task`.
-    pub agent_pastes: Vec<PasteEntry>,
-
     /// Singleton ProcessManager that manages all sub-agents spawned
     /// by parallel dispatch. Owned by the TUI, shared via Arc to the
     /// tool layer.
@@ -375,6 +351,13 @@ pub struct App {
     /// changes (events, key presses, resize); reset after each
     /// `terminal.draw()`.
     pub needs_render: bool,
+
+    /// Cached agent panel area from the most recent render. The
+    /// mouse handler needs to know where the chat panel sits on
+    /// screen to decide whether a wheel event is over the
+    /// chat. Refreshed by `components::agent::render_agent`
+    /// after computing the layout split.
+    pub last_agent_area: Option<ratatui::layout::Rect>,
 
     /// Pending key for two-key vim motions (e.g. `gg` = first `g`
     /// sets this, second `g` consumes it and jumps to top).
@@ -448,7 +431,6 @@ impl App {
             agent_streaming: false,
             spinner_tick: 0,
             agent_usage_tokens: None,
-            agent_pastes: Vec::new(), // PasteEntry
             process_manager,
             process_event_rx: Some(process_event_rx),
             agent_titles,
@@ -467,6 +449,7 @@ impl App {
             pool_entries,
             new_provider_form: None,
             needs_render: true,
+            last_agent_area: None,
             pending_key: None,
         }
     }
@@ -495,24 +478,9 @@ impl App {
     //
     // The input text buffer and activation flag live inside
     // `ChatPanelState`. These accessors keep the existing call
-    // sites (`app.agent_input`, `app.agent_input_active`,
+    // sites (`app.agent_input_active`, `app.take_agent_input`,
     // etc.) working without forcing every key handler to know
     // about the chat panel.
-
-    /// Borrow the current input text.
-    pub fn agent_input(&self) -> &str {
-        self.chat_panel.input_text()
-    }
-
-    /// Mutably borrow the current input text. Callers that
-    /// intend to modify it should prefer the typed helpers
-    /// (`push_input_char`, `pop_input_char`, etc.) so the
-    /// input version is bumped automatically. This raw
-    /// accessor is for callers that need `push_str` (paste
-    /// handling).
-    pub fn agent_input_mut(&mut self) -> &mut String {
-        self.chat_panel.input_text_mut()
-    }
 
     /// `true` when the user is in input mode.
     pub fn agent_input_active(&self) -> bool {

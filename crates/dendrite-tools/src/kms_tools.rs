@@ -131,6 +131,7 @@ mod kms_detach_knowledge;
 mod kms_get_entity;
 mod kms_get_entity_knowledge;
 mod kms_get_knowledge;
+mod kms_get_knowledge_batch;
 mod kms_link_orphans;
 mod kms_list_entities;
 mod kms_merge_subtree;
@@ -140,6 +141,7 @@ mod kms_rename_knowledge;
 mod kms_move_children;
 mod kms_search_entity;
 mod kms_search_subtree;
+mod kms_search_content;
 mod kms_subtree_knowledge;
 mod kms_update_entity;
 mod kms_update_knowledge;
@@ -213,9 +215,11 @@ pub fn readonly_registrations(
         kms_get_entity::registration(svc.clone()),
         kms_get_entity_knowledge::registration(svc.clone()),
         kms_get_knowledge::registration(svc.clone()),
+        kms_get_knowledge_batch::registration(svc.clone()),
         kms_local::registration(svc.clone()),
         kms_subtree_knowledge::registration(svc.clone()),
-        kms_search_subtree::registration(svc),
+        kms_search_subtree::registration(svc.clone()),
+        kms_search_content::registration(svc),
     ];
     tools.push(corpus_list::registration(corpus.clone()));
     tools.push(corpus_get_chunk::registration(corpus.clone()));

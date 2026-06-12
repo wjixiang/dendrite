@@ -64,3 +64,23 @@ pub use chat::input::{
     build_status_line, render_chat_input, ChatInputStatus, ChatInputTheme, RunningPhase,
     SPINNER_FRAMES,
 };
+
+// Re-export the chat mouse API. Hosts call
+// `handle_chat_mouse_event` to forward crossterm mouse events to
+// the chat panel; the function returns whether the event was
+// consumed (so the host can chain to other panels).
+pub use chat::mouse::{
+    handle_chat_mouse_event, ChatMouseOutcome, MouseButton, MouseEventKind,
+};
+
+// Re-export the paste API. Hosts can either forward raw
+// `Event::Paste` payloads via
+// [`ChatPanelState::push_paste`] (recommended — the panel
+// decides whether to summarize and tracks full content
+// alongside the placeholder) or use the lower-level
+// `summarize_paste` / thresholds directly. The constants are
+// re-exported so external hosts can match the chat panel's
+// summarization heuristic without copy-pasting the values.
+pub use chat::paste::{
+    summarize_paste, PasteEntry, PASTE_SUMMARY_LEN_THRESHOLD, PASTE_SUMMARY_LINE_THRESHOLD,
+};

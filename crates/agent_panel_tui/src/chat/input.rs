@@ -1,10 +1,10 @@
 //! Chat input / status row: data model, pure line builder, and
 //! shared constants.
 //!
-//! The renderer in [`super::renderer`] consumes the types defined
-//! here. The pure line builder [`build_status_line`] is split out
-//! so it can be unit-tested without a `Frame` — same pattern as
-//! [`crate::chat::ChatMessage::to_lines`].
+//! The renderer in [`renderer`] consumes the types defined here.
+//! The pure line builder [`build_status_line`] is split out so
+//! it can be unit-tested without a `Frame` — same pattern as
+//! [`crate::ChatMessage::to_lines`].
 
 pub mod renderer;
 pub mod theme;
