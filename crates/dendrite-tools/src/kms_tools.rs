@@ -142,19 +142,19 @@ mod kms_get_knowledge;
 mod kms_get_knowledge_batch;
 mod kms_link_orphans;
 mod kms_list_entities;
+mod kms_local;
 mod kms_merge_subtree;
+mod kms_move_children;
 mod kms_move_index;
 mod kms_parallel_dispatch;
 mod kms_rename_knowledge;
-mod kms_move_children;
+mod kms_search_content;
 mod kms_search_entity;
 mod kms_search_subtree;
-mod kms_search_content;
 mod kms_subtree_knowledge;
 mod kms_update_entity;
 mod kms_update_knowledge;
 mod kms_update_nomenclature;
-mod kms_local;
 
 // ---------------------------------------------------------------------------
 // Aggregate registration functions
@@ -243,15 +243,18 @@ pub fn readonly_registrations(
     tools
 }
 
+pub type SubAgentInitFut =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+pub type SubContextFactory = Arc<
+    dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> SubAgentConfig + Send + Sync,
+>;
+
 /// Configuration bundle produced by the sub-agent factory for parallel dispatch.
 pub struct SubAgentConfig {
     pub context: Arc<dyn AgentContext>,
     pub system_prompt: &'static str,
-    /// Optional async initializer that the dispatch awaits before
-    /// spawning the sub-agent. The factory uses this to seed the
-    /// sub-agent's `local_view` (and any other one-shot setup) without
-    /// blocking the dispatch's async runtime.
-    pub init: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>>,
+    pub init: Option<SubAgentInitFut>,
 }
 
 /// Build the tool set for the parallel compose agent.
@@ -268,9 +271,7 @@ pub fn parallel_registrations(
     corpus: Arc<corpus::CorpusService>,
     ctx: Arc<dyn AgentContext>,
     pool: Arc<ModelPool>,
-    sub_context_factory: Arc<
-        dyn Fn(Arc<kms::KmsService>, Arc<ModelPool>, String) -> SubAgentConfig + Send + Sync,
-    >,
+    sub_context_factory: SubContextFactory,
     process_manager: Arc<agentik_core::process::ProcessManager>,
     agent_titles: Arc<std::sync::RwLock<std::collections::HashMap<uuid::Uuid, String>>>,
 ) -> Vec<ToolRegistration> {
