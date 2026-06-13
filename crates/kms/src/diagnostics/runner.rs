@@ -35,9 +35,9 @@ fn leaf_kind_from_target(target_type: TargetType) -> LocationLeafKind {
 }
 
 /// 在 location 字符串的"叶子"（最后一个 ` > ` 分隔之后的片段）追加文本标记。
-/// 这样 Agent 看到 `Root > 心血管疾病 > 冠心病 [knowledge]` 就能立刻知道
-/// "冠心病" 实际是一条挂载的知识（target_type=knowledge），
-/// 而 `Root > 心血管疾病 > 冠心病`（无标记）则是普通的 Group 索引节点。
+/// 这样 Agent 看到 `Root > 编程语言 > Python [knowledge]` 就能立刻知道
+/// "Python" 实际是一条挂载的知识（target_type=knowledge），
+/// 而 `Root > 编程语言 > Python`（无标记）则是普通的 Group 索引节点。
 fn format_location_with_leaf_marker(path: &str, leaf_kind: LocationLeafKind) -> String {
     let suffix = match leaf_kind {
         LocationLeafKind::Index => "",

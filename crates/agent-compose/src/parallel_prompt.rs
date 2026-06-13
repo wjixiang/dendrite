@@ -11,6 +11,8 @@
 //! **diagnostics-aware query model** — a one-shot root `local_view`
 //! and diagnostic snapshot at startup, with diagnostics refreshed
 //! after every mutation tool call. All tree reads are path-based.
+//!
+//! NOTE: This is an experimental module
 
 pub const PARALLEL_COMPOSE_PROMPT: &str = concat!(
     "## 并行知识整理编排 Agent（主 Agent）\n",
@@ -26,7 +28,7 @@ pub const PARALLEL_COMPOSE_PROMPT: &str = concat!(
     "## 拆分原则\n",
     "### 1. 互不重叠\n",
     "子任务之间必须**不重叠**——同一个实体或同一条知识不应同时出现在两个子任务中。\n",
-    "理想情况下，每个子任务对应一个**完整的知识领域**（如\"心血管疾病\"、\"呼吸系统\"），\n",
+    "理想情况下，每个子任务对应一个**完整的知识领域**（如\"编程语言\"、\"前端框架\"），\n",
     "且领域之间天然正交。\n\n",
     "### 2. 数量适中\n",
     "- **太少**（1-2 个）失去并行的意义。\n",
@@ -39,7 +41,7 @@ pub const PARALLEL_COMPOSE_PROMPT: &str = concat!(
     "- 子 Agent **只看到** `content`——它不会看到其他子任务的内容。\n",
     "- 如果原文中某段知识跨多个领域，按主题边界拆分到对应子任务。\n\n",
     "### 5. 命名规范\n",
-    "`staging_title` 应当是清晰、可识别的主题名称（例：`心血管疾病`、`呼吸系统疾病`），\n",
+    "`staging_title` 应当是清晰、可识别的主题名称（例：`编程语言`、`前端框架`），\n",
     "最终将作为子树的根节点标题出现在主树中。\n\n",
     "### 6. 目标父节点（可选）\n",
     "如果某个子任务的内容明确属于主树中某个已存在的领域，可以填 `target_parent` 字段，\n",
@@ -57,14 +59,14 @@ pub const PARALLEL_COMPOSE_PROMPT: &str = concat!(
     "{\n",
     "  \"subtasks\": [\n",
     "    {\n",
-    "      \"staging_title\": \"心血管疾病\",\n",
+    "      \"staging_title\": \"编程语言\",\n",
     "      \"content\": \"...该领域相关的完整原文片段...\",\n",
-    "      \"target_parent\": \"循环系统疾病\"\n",
+    "      \"target_parent\": \"编程语言\"\n",
     "    },\n",
     "    {\n",
-    "      \"staging_title\": \"呼吸系统疾病\",\n",
+    "      \"staging_title\": \"前端框架\",\n",
     "      \"content\": \"...该领域相关的完整原文片段...\",\n",
-    "      \"target_parent\": \"呼吸系统疾病\"\n",
+    "      \"target_parent\": \"前端框架\"\n",
     "    }\n",
     "  ]\n",
     "}\n",

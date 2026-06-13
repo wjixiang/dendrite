@@ -19,6 +19,14 @@ use serde_json::Value;
 const READONLY_KMS_TOOLS: &[&str] = &[
     "kms_search_entity",
     "kms_get_entity_knowledge",
+    "kms_get_entity",
+    "kms_get_knowledge",
+    "kms_get_knowledge_batch",
+    "kms_local",
+    "kms_subtree_knowledge",
+    "kms_search_subtree",
+    "kms_search_content",
+    "kms_list_entities",
 ];
 
 /// Tools that start with the `corpus_` prefix but are read-only.
@@ -181,6 +189,12 @@ fn raw_registrations(
         kms_delete_index::registration(svc.clone()),
         kms_detach_knowledge::registration(svc.clone()),
         kms_merge_subtree::registration(svc.clone()),
+        // Read-only KMS tools (also needed by the compose agent).
+        kms_local::registration(svc.clone()),
+        kms_subtree_knowledge::registration(svc.clone()),
+        kms_search_subtree::registration(svc.clone()),
+        kms_search_content::registration(svc.clone()),
+        kms_get_knowledge_batch::registration(svc.clone()),
     ];
     // Corpus tools.
     tools.push(corpus_list::registration(corpus.clone()));

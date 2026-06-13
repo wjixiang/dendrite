@@ -57,21 +57,21 @@ Index (index-tree skeleton)
 **Typical organization:**
 
 ```
-Cardiovascular diseases
-├── Coronary heart disease
-│   ├── CHD · Definition           ─┐
-│   ├── CHD · Diagnostic criteria   │  Knowledge nodes
-│   ├── CHD · Drug therapy         ─┘
+Programming languages
+├── Python
+│   ├── Python · Definition           ─┐
+│   ├── Python · Type system          │  Knowledge nodes
+│   ├── Python · Package management ─┘
 │   └── ...
-├── Heart failure
-│   ├── Acute HF
-│   │   ├── Acute HF · Etiology
-│   │   └── Acute HF · Drug therapy
-│   └── Chronic HF
+├── JavaScript
+│   ├── React
+│   │   ├── React · Core concepts
+│   │   └── React · Ecosystem
+│   └── Vue.js
 │       └── ...
 ```
 
-Knowledge granularity is strictly enforced: **one title = one facet**. Connectors that merge multiple facets are forbidden ("Diagnosis and treatment", "Etiology and pathogenesis", etc. all count as violations). This rule is enforced twice: in the system prompt **and** in diagnostic rules.
+Knowledge granularity is strictly enforced: **one title = one facet**. Connectors that merge multiple facets are forbidden ("Setup and configuration", "Concepts and architecture", etc. all count as violations). This rule is enforced twice: in the system prompt **and** in diagnostic rules.
 
 ---
 
@@ -140,17 +140,17 @@ Diagnostic results render live in the TUI `Diagnostics` panel; each one carries 
 
 ### Parallel Subtree orchestration mode
 
-When user input is a large block of text (e.g. uploading the entire *Internal Medicine, 10th ed.*), serial single-agent processing could take hours. Parallel mode's approach:
+When user input is a large block of text (e.g. uploading an entire technical reference book), serial single-agent processing could take hours. Parallel mode's approach:
 
 ```
 User pastes a big text
     ↓
 Parallel agent splits along domain boundaries
-("Cardiovascular", "Respiratory", "Digestive"...)
+("Programming languages", "Frontend frameworks", "Databases"...)
     ↓
 Calls kms_parallel_dispatch(subtasks=[
-  { staging_title: "Cardiovascular", content: "Chapter X..." },
-  { staging_title: "Respiratory",    content: "Chapter Y..." },
+  { staging_title: "Programming languages", content: "Chapter X..." },
+  { staging_title: "Frontend frameworks",    content: "Chapter Y..." },
   ...
 ])
     ↓

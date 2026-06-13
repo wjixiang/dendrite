@@ -159,7 +159,10 @@ fn render_document_index(docs: &[corpus::Document]) -> String {
 
     if docs.is_empty() {
         let _ = writeln!(s, "## 语料库");
-        let _ = writeln!(s, "当前无已上传文档。用户粘贴长文本时系统将自动切块并存储。");
+        let _ = writeln!(
+            s,
+            "当前无已上传文档。用户粘贴长文本时系统将自动切块并存储。"
+        );
         return s;
     }
 
@@ -178,18 +181,14 @@ fn render_document_index(docs: &[corpus::Document]) -> String {
         let _ = writeln!(
             s,
             "- [doc:{}, title=\"{}\", chunks={}, chars={}{}]",
-            d.id,
-            d.title,
-            d.chunk_count,
-            d.char_count,
-            source,
+            d.id, d.title, d.chunk_count, d.char_count, source,
         );
     }
     let _ = writeln!(s);
     let _ = writeln!(
         s,
-        "**如何阅读**：用 `corpus_search(\"\", \"关键词\", top_k=5)` 找到相关块，\
-         再用 `corpus_get_window(\"\", chunk_index=17, before=1, after=1)` 读取上下文。\
+        "**如何阅读**：从 chunk_index=0 开始逐一调用 `corpus_get_window(doc_id, chunk_index=N, before=0, after=0)` \
+         顺序精读每个块，逐块提取知识。禁止用 `corpus_search` 跳块阅读。\
          知识创建时把 `source_document_id` + `source_chunk_idx` 一起传入以便追溯。"
     );
 
@@ -203,19 +202,13 @@ pub(crate) fn render_diagnostics(diags: &[kms::Diagnostic]) -> String {
     let mut s = String::new();
 
     if diags.is_empty() {
-        let _ = writeln!(s, "## 诊断（无问题）");
+        let _ = writeln!(s, "## 结构检查（无问题）");
         return s;
     }
 
-    let _ = writeln!(s, "## 诊断（{} 条问题）", diags.len());
+    let _ = writeln!(s, "## 结构检查（{} 条问题）", diags.len());
     for d in diags {
-        let _ = writeln!(
-            s,
-            "- [{}] {} — {}",
-            d.severity.label(),
-            d.code,
-            d.message
-        );
+        let _ = writeln!(s, "- [{}] {} — {}", d.severity.label(), d.code, d.message);
         if !d.location.is_empty() {
             let _ = writeln!(s, "  位置: {}", d.location);
         }

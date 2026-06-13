@@ -150,7 +150,7 @@ async fn dispatch_parallel(
         // absolute paths via `kms_local`.
         let sub_svc = svc.clone();
         // The absolute path of the staging Group we just created,
-        // rooted at the system root (e.g. "/心血管疾病"). The factory
+        // rooted at the system root (e.g. "/编程语言"). The factory
         // closure uses it to seed the sub-agent's `local_view`.
         let staging_path = format!("/{}", p.sub_task.staging_title);
         let mut config = sub_context_factory(sub_svc.clone(), pool.clone(), staging_path.clone());

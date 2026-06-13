@@ -365,7 +365,7 @@ impl Agent {
 
         let est_totol_token = self.token_budget.estimate_total_token(context.len() as u64);
 
-        if est_totol_token * 9 > (model.model_info.context_length * 10) {
+        if est_totol_token * 10 > (model.model_info.context_length * 9) {
             tracing::debug!(
                 est_tokens = est_totol_token,
                 context_length = model.model_info.context_length,

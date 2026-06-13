@@ -588,7 +588,7 @@ impl KmsService {
         target_ref: Option<&str>,
         target_type: Option<TargetType>,
     ) -> Result<Index, String> {
-        let parent_id = self.resolve_index(parent_ref).await?;
+        let parent_id = self.resolve_index_ref(parent_ref).await?;
         let target = match target_type {
             Some(TargetType::Knowledge) => match target_ref {
                 Some(r) => Some(self.resolve_knowledge(r).await?),
@@ -599,6 +599,33 @@ impl KmsService {
         let title = title.or_else(|| target_ref.map(|s| s.to_string()));
         self.create_index(parent_id, title, target, target_type)
             .await
+    }
+
+    /// Resolve a `parent_ref` for index-creation calls.
+    ///
+    /// Accepts both path syntax and plain-title syntax:
+    /// - `/` or `/编程语言/Python` — absolute path resolved from the
+    ///   system root via `resolve_path`. Path syntax is the recommended
+    ///   form for tool callers because it is unambiguous when the same
+    ///   title exists under multiple parents.
+    /// - `Python` — plain title; looked up via `resolve_index` and
+    ///   resolved against the implicit current pointer's tree.
+    ///
+    /// The split mirrors the addressing rules documented for the tool
+    /// layer (see `kms_create_index` and the agent system prompt).
+    async fn resolve_index_ref(&self, parent_ref: &str) -> Result<Uuid, String> {
+        let trimmed = parent_ref.trim();
+        if trimmed.is_empty() {
+            return Err("parent_ref must not be empty".to_string());
+        }
+        // Path-like input: leading `/` is an explicit absolute path,
+        // and any other `/` in the string means the caller is using
+        // path syntax (`编程语言/Python`). Either way route through
+        // `resolve_path` so `/` resolves to the system root.
+        if trimmed.starts_with('/') || trimmed.contains('/') {
+            return self.resolve_path(trimmed).await;
+        }
+        self.resolve_index(trimmed).await
     }
 
     pub async fn link_orphans(
@@ -2275,6 +2302,72 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(untitled_a.id, untitled_b.id);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_by_ref_accepts_root_path() {
+        // `parent_ref="/"` and `parent_ref="/<title>"` must resolve as
+        // absolute paths — the previous title-only resolver rejected
+        // them with `index not found: /`.
+        let svc = setup_service().await;
+        let root = svc.create_index_root("根").await.unwrap();
+
+        // Bare "/" — equivalent to creating under the system root.
+        let child = svc
+            .create_index_by_ref("/", Some("子节点".into()), None, None)
+            .await
+            .expect("'/' should resolve to the system root");
+        assert_eq!(child.parent_id, Some(root.id));
+        assert_eq!(child.title.as_deref(), Some("子节点"));
+
+        // Absolute path to a deeper node — disambiguates same-titled
+        // siblings across different parents.
+        let sibling = svc
+            .create_index(root.id, Some("编程语言".into()), None, None)
+            .await
+            .unwrap();
+        let _ = svc
+            .create_index(root.id, Some("工具".into()), None, None)
+            .await
+            .unwrap();
+        // Add a sibling group that also has a child called "Python".
+        let other_lang = svc
+            .create_index(root.id, Some("其他语言".into()), None, None)
+            .await
+            .unwrap();
+        let other_python = svc
+            .create_index(other_lang.id, Some("Python".into()), None, None)
+            .await
+            .unwrap();
+        // The first parent (编程语言) does not yet have a "Python" child.
+        // Path-based resolution must land the new node under 编程语言,
+        // not under 其他语言's same-titled child.
+        let resolved = svc
+            .create_index_by_ref(
+                "/编程语言",
+                Some("Python".into()),
+                None,
+                None,
+            )
+            .await
+            .expect("absolute-path resolution should succeed");
+        assert_eq!(resolved.parent_id, Some(sibling.id));
+        assert_ne!(resolved.id, other_python.id);
+
+        // Plain-title mode still works — same parent, no path syntax.
+        let title_child = svc
+            .create_index_by_ref("编程语言", Some("Rust".into()), None, None)
+            .await
+            .expect("plain-title resolution still works");
+        assert_eq!(title_child.parent_id, Some(sibling.id));
+
+        // Empty input is rejected with a clear message rather than
+        // silently resolving to the implicit pointer.
+        let err = svc
+            .create_index_by_ref("   ", Some("空".into()), None, None)
+            .await
+            .expect_err("empty parent_ref should fail");
+        assert!(err.contains("empty"), "error should mention empty: {err}");
     }
 
     #[tokio::test]

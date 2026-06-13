@@ -10,16 +10,16 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
          mounted under `remount_path`. \
          \n\n\
          ⚠️ ADDRESSING — `source_path` and `remount_path` are PATHS, NOT \
-         titles. A bare title (e.g. `\"心力衰竭\"`) is silently treated as \
+         titles. A bare title (e.g. `\"Python\"`) is silently treated as \
          a relative segment under whatever the current pointer happens to \
          be, so it often lands on the wrong node — or fails opaquely when \
          the same title exists under multiple parents. Always supply a \
          resolvable path: \
-         \n  ✅ source_path=\"/心血管/心力衰竭\"  (absolute, unambiguous) \
+         \n  ✅ source_path=\"/编程语言/Python\"  (absolute, unambiguous) \
          \n  ✅ source_path=\"/\"                 (root) \
-         \n  ✅ remount_path=\"/心血管\"           (absolute) \
-         \n  ❌ source_path=\"心力衰竭\"           (bare title — DO NOT USE) \
-         \n  ❌ source_path=\"心血管/心力衰竭\"     (missing leading `/`) \
+         \n  ✅ remount_path=\"/编程语言\"           (absolute) \
+         \n  ❌ source_path=\"Python\"           (bare title — DO NOT USE) \
+         \n  ❌ source_path=\"编程语言/Python\"     (missing leading `/`) \
          \nUse `kms_local` first if you are unsure of the absolute path. \
          \n\n\
          The two paths may be the same to regroup in place, or differ to \

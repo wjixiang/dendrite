@@ -9,14 +9,14 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
         "Move an index node (and its entire subtree) to a new parent. \
          \n\n\
          ⚠️ ADDRESSING — `index_path` and `new_parent_path` are PATHS, NOT \
-         titles. A bare title (e.g. `\"心力衰竭\"`) is silently treated as \
+         titles. A bare title (e.g. `\"Python\"`) is silently treated as \
          a relative segment under whatever the current pointer happens to \
          be, so it often lands on the wrong node when the same title \
          exists under multiple parents. Always supply an absolute path: \
-         \n  ✅ index_path=\"/呼吸系统/哮喘\"        (absolute, unambiguous) \
-         \n  ✅ new_parent_path=\"/儿科/常见疾病\"   (absolute) \
-         \n  ❌ index_path=\"哮喘\"                  (bare title — DO NOT USE) \
-         \n  ❌ new_parent_path=\"常见疾病\"          (bare title — DO NOT USE) \
+         \n  ✅ index_path=\"/前端框架/React\"        (absolute, unambiguous) \
+         \n  ✅ new_parent_path=\"/技术栈/常用工具\"   (absolute) \
+         \n  ❌ index_path=\"React\"                  (bare title — DO NOT USE) \
+         \n  ❌ new_parent_path=\"常用工具\"          (bare title — DO NOT USE) \
          \nUse `kms_local` first if you are unsure of the absolute path. \
          \n\n\
          The root index cannot be moved, the new parent must not be a \

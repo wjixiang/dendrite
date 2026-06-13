@@ -117,7 +117,12 @@ pub async fn run_app(
                 match &event {
                     agentik_core::process::ProcessEvent::StateChanged { agent_id, .. }
                     | agentik_core::process::ProcessEvent::Agent { agent_id, .. } => {
-                        if !app.agent_panel.agents.iter().any(|e| e.agent_id == *agent_id) {
+                        if !app
+                            .agent_panel
+                            .agents
+                            .iter()
+                            .any(|e| e.agent_id == *agent_id)
+                        {
                             // Look up the title from the shared map.
                             let title = app
                                 .agent_titles
@@ -193,240 +198,256 @@ pub async fn run_app(
                     Event::Key(key) => {
                         had_input = true;
                         match handle_key_event(key, app) {
-                        Action::Quit => app.should_quit = true,
-                        Action::TreeChanged => app.on_tree_select().await,
-                        Action::SubmitAgent(input) => spawn_agent_task(app, input),
-                        Action::OpenSettings => {
-                            app.settings_modal_open = true;
-                        }
-                        Action::SwitchAgent => {
-                            let next = app.agent_kind.toggle();
-                            app.agent_kind = next;
-                            app.bump_message_version();
-                            app.toast
-                                .info(format!("Switched to {} agent", app.agent_kind.label()));
-                        }
-                        Action::SettingsNav(pane, delta) => match pane {
-                            SettingsPane::Provider => {
-                                let max = app.providers.len().saturating_sub(1);
-                                app.settings_selected_provider =
-                                    (app.settings_selected_provider as isize + delta)
-                                        .clamp(0, max as isize)
-                                    as usize;
-                                app.settings_selected_model = 0;
+                            Action::Quit => app.should_quit = true,
+                            Action::TreeChanged => app.on_tree_select().await,
+                            Action::SubmitAgent(input, pastes) => {
+                                spawn_agent_task(app, input, pastes)
                             }
-                            SettingsPane::Model => {
-                                if let Some(provider) =
-                                    app.providers.get(app.settings_selected_provider)
-                                {
-                                    let max = provider.models.len().saturating_sub(1);
-                                    app.settings_selected_model =
-                                        (app.settings_selected_model as isize + delta)
+                            Action::OpenSettings => {
+                                app.settings_modal_open = true;
+                            }
+                            Action::SwitchAgent => {
+                                let next = app.agent_kind.toggle();
+                                app.agent_kind = next;
+                                app.bump_message_version();
+                                app.toast
+                                    .info(format!("Switched to {} agent", app.agent_kind.label()));
+                            }
+                            Action::SettingsNav(pane, delta) => match pane {
+                                SettingsPane::Provider => {
+                                    let max = app.providers.len().saturating_sub(1);
+                                    app.settings_selected_provider =
+                                        (app.settings_selected_provider as isize + delta)
                                             .clamp(0, max as isize)
-                                    as usize;
+                                            as usize;
+                                    app.settings_selected_model = 0;
                                 }
-                            }
-                            SettingsPane::Pool => {
-                                let max = app.pool_entries.len().saturating_sub(1);
-                                app.settings_selected_pool = (app.settings_selected_pool as isize
-                                    + delta)
-                                    .clamp(0, max as isize)
-                                    as usize;
-                            }
-                        },
-                        Action::SettingsSwitchPane(pane) => {
-                            app.settings_pane = pane;
-                        }
-                        Action::SettingsTogglePool => {
-                            let pair = app.providers.get(app.settings_selected_provider).map(|p| {
-                                let pid = p.id.clone();
-                                let mname = p
-                                    .models
-                                    .get(app.settings_selected_model)
-                                    .cloned()
-                                    .unwrap_or_default();
-                                (pid, mname)
-                            });
-                            if let Some((provider_id, model_name)) = pair {
-                                let was_in = app.is_in_pool(&provider_id, &model_name);
-                                app.toggle_pool_entry(&provider_id, &model_name);
-                                save_settings(&app.provider_configs, &app.pool_entries);
-                                let label = app
-                                    .providers
-                                    .iter()
-                                    .find(|p| p.id == provider_id)
-                                    .map(|p| p.display_name.clone())
-                                    .unwrap_or_else(|| provider_id.clone());
-                                if was_in {
-                                    app.toast.info(format!("Removed {} / {}", label, model_name));
-                                } else {
-                                    app.toast.info(format!("Added {} / {}", label, model_name));
-                                }
-                            }
-                        }
-                        Action::SettingsRemovePool => {
-                            let idx = app.settings_selected_pool;
-                            if idx < app.pool_entries.len() {
-                                let removed = app.pool_entries[idx].clone();
-                                app.remove_pool_entry(idx);
-                                save_settings(&app.provider_configs, &app.pool_entries);
-                                let max = app.pool_entries.len().saturating_sub(1);
-                                if app.settings_selected_pool > max {
-                                    app.settings_selected_pool = max;
-                                }
-                                let label = app
-                                    .providers
-                                    .iter()
-                                    .find(|p| p.id == removed.provider_id)
-                                    .map(|p| p.display_name.clone())
-                                    .unwrap_or_else(|| removed.provider_id.clone());
-                                app.toast.info(format!("Removed {} / {}", label, removed.model));
-                            }
-                        }
-                        Action::SettingsConfirm => {
-                            if app.pool_entries.is_empty() {
-                                app.toast.warning("Pool is empty — no changes applied");
-                            } else {
-                                let new_entries = app.pool_entries.clone();
-                                if let Some(pool) = crate::settings::build_pool_from_entries(
-                                    &new_entries,
-                                    &app.providers,
-                                ) {
-                                    let pool_arc = std::sync::Arc::new(pool);
-                                    agent::rebuild_all_agents(app, &pool_arc).await;
-                                    app.toast.success(format!(
-                                        "Pool updated: {} model(s)",
-                                        new_entries.len()
-                                    ));
-                                } else {
-                                    app.toast.error("Failed to build model pool from selections");
-                                }
-                            }
-                            app.settings_modal_open = false;
-                        }
-                        Action::SettingsNewProvider => {
-                            if app.settings_pane == SettingsPane::Provider {
-                                app.new_provider_form = Some(crate::state::NewProviderForm::new());
-                            } else {
-                                app.toast.info("Switch to the Providers pane to add a new one");
-                            }
-                        }
-                        Action::SettingsDeleteProvider => {
-                            if app.settings_pane == SettingsPane::Provider {
-                                let id = app
-                                    .providers
-                                    .get(app.settings_selected_provider)
-                                    .map(|p| p.id.clone());
-                                if let Some(id) = id {
-                                    if app.remove_custom_provider(&id) {
-                                        save_settings(&app.provider_configs, &app.pool_entries);
-                                        let max = app.providers.len().saturating_sub(1);
-                                        if app.settings_selected_provider > max {
-                                            app.settings_selected_provider = max;
-                                        }
-                                        app.toast.info("Custom provider removed");
-                                    } else {
-                                        app.toast.warning("Built-in providers cannot be removed");
-                                    }
-                                }
-                            }
-                        }
-                        Action::SettingsFormCycleField(delta) => {
-                            if let Some(form) = app.new_provider_form.as_mut() {
-                                form.active_field = if delta > 0 {
-                                    (form.active_field + 1) % 4
-                                } else {
-                                    (form.active_field + 3) % 4
-                                };
-                            }
-                        }
-                        Action::SettingsFormCycleType(delta) => {
-                            if let Some(form) = app.new_provider_form.as_mut() {
-                                if form.active_field == 0 {
-                                    let n = crate::settings::BUILTIN_PROVIDER_TYPES.len();
-                                    if delta > 0 {
-                                        form.type_idx = (form.type_idx + 1) % n;
-                                    } else {
-                                        form.type_idx = (form.type_idx + n - 1) % n;
-                                    }
-                                    form.url_preset_idx = form
-                                        .presets()
-                                        .iter()
-                                        .position(|p| !p.is_custom)
-                                        .unwrap_or(0);
-                                    form.url_custom.clear();
-                                    form.error = None;
-                                } else if form.active_field == 3 {
-                                    let n = form.presets().len().max(1);
-                                    if delta > 0 {
-                                        form.url_preset_idx = (form.url_preset_idx + 1) % n;
-                                    } else {
-                                        form.url_preset_idx = (form.url_preset_idx + n - 1) % n;
-                                    }
-                                    form.error = None;
-                                }
-                            }
-                        }
-                        Action::SettingsFormType(c) => {
-                            if let Some(form) = app.new_provider_form.as_mut() {
-                                form.error = None;
-                                match form.active_field {
-                                    1 => form.display_name.push(c),
-                                    2 => form.api_key.push(c),
-                                    3 if form.url_is_custom() => form.url_custom.push(c),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Action::SettingsFormBackspace => {
-                            if let Some(form) = app.new_provider_form.as_mut() {
-                                match form.active_field {
-                                    1 => { let _ = form.display_name.pop(); }
-                                    2 => { let _ = form.api_key.pop(); }
-                                    3 if form.url_is_custom() => { let _ = form.url_custom.pop(); }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Action::SettingsFormSubmit => {
-                            if let Some(form) = app.new_provider_form.take() {
-                                let ptype = crate::settings::BUILTIN_PROVIDER_TYPES[form.type_idx];
-                                let display_name = form.display_name.trim().to_string();
-                                let api_key = form.api_key.trim().to_string();
-                                let base_url = form.resolved_url();
-                                if display_name.is_empty() {
-                                    app.toast.warning("Display name cannot be empty");
-                                    app.new_provider_form = Some(form);
-                                } else if api_key.is_empty() {
-                                    app.toast.warning("API key cannot be empty");
-                                    app.new_provider_form = Some(form);
-                                } else if base_url.is_empty() && form.url_is_custom() {
-                                    app.toast.warning("Custom URL cannot be empty");
-                                    app.new_provider_form = Some(form);
-                                } else {
-                                    let new_id = app.add_custom_provider(
-                                        display_name.clone(),
-                                        ptype.to_string(),
-                                        api_key,
-                                        base_url,
-                                    );
-                                    save_settings(&app.provider_configs, &app.pool_entries);
-                                    app.toast.success(format!(
-                                        "Added custom provider: {} ({})",
-                                        display_name, ptype
-                                    ));
-                                    if let Some(pos) =
-                                        app.providers.iter().position(|p| p.id == new_id)
+                                SettingsPane::Model => {
+                                    if let Some(provider) =
+                                        app.providers.get(app.settings_selected_provider)
                                     {
-                                        app.settings_selected_provider = pos;
+                                        let max = provider.models.len().saturating_sub(1);
+                                        app.settings_selected_model =
+                                            (app.settings_selected_model as isize + delta)
+                                                .clamp(0, max as isize)
+                                                as usize;
+                                    }
+                                }
+                                SettingsPane::Pool => {
+                                    let max = app.pool_entries.len().saturating_sub(1);
+                                    app.settings_selected_pool =
+                                        (app.settings_selected_pool as isize + delta)
+                                            .clamp(0, max as isize)
+                                            as usize;
+                                }
+                            },
+                            Action::SettingsSwitchPane(pane) => {
+                                app.settings_pane = pane;
+                            }
+                            Action::SettingsTogglePool => {
+                                let pair =
+                                    app.providers.get(app.settings_selected_provider).map(|p| {
+                                        let pid = p.id.clone();
+                                        let mname = p
+                                            .models
+                                            .get(app.settings_selected_model)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        (pid, mname)
+                                    });
+                                if let Some((provider_id, model_name)) = pair {
+                                    let was_in = app.is_in_pool(&provider_id, &model_name);
+                                    app.toggle_pool_entry(&provider_id, &model_name);
+                                    save_settings(&app.provider_configs, &app.pool_entries);
+                                    let label = app
+                                        .providers
+                                        .iter()
+                                        .find(|p| p.id == provider_id)
+                                        .map(|p| p.display_name.clone())
+                                        .unwrap_or_else(|| provider_id.clone());
+                                    if was_in {
+                                        app.toast
+                                            .info(format!("Removed {} / {}", label, model_name));
+                                    } else {
+                                        app.toast.info(format!("Added {} / {}", label, model_name));
                                     }
                                 }
                             }
-                        }
-                        Action::SettingsFormCancel => {
-                            app.new_provider_form = None;
-                        }
-                        Action::None => {}
+                            Action::SettingsRemovePool => {
+                                let idx = app.settings_selected_pool;
+                                if idx < app.pool_entries.len() {
+                                    let removed = app.pool_entries[idx].clone();
+                                    app.remove_pool_entry(idx);
+                                    save_settings(&app.provider_configs, &app.pool_entries);
+                                    let max = app.pool_entries.len().saturating_sub(1);
+                                    if app.settings_selected_pool > max {
+                                        app.settings_selected_pool = max;
+                                    }
+                                    let label = app
+                                        .providers
+                                        .iter()
+                                        .find(|p| p.id == removed.provider_id)
+                                        .map(|p| p.display_name.clone())
+                                        .unwrap_or_else(|| removed.provider_id.clone());
+                                    app.toast
+                                        .info(format!("Removed {} / {}", label, removed.model));
+                                }
+                            }
+                            Action::SettingsConfirm => {
+                                if app.pool_entries.is_empty() {
+                                    app.toast.warning("Pool is empty — no changes applied");
+                                } else {
+                                    let new_entries = app.pool_entries.clone();
+                                    if let Some(pool) = crate::settings::build_pool_from_entries(
+                                        &new_entries,
+                                        &app.providers,
+                                    ) {
+                                        let pool_arc = std::sync::Arc::new(pool);
+                                        agent::rebuild_all_agents(app, &pool_arc).await;
+                                        app.toast.success(format!(
+                                            "Pool updated: {} model(s)",
+                                            new_entries.len()
+                                        ));
+                                    } else {
+                                        app.toast
+                                            .error("Failed to build model pool from selections");
+                                    }
+                                }
+                                app.settings_modal_open = false;
+                            }
+                            Action::SettingsNewProvider => {
+                                if app.settings_pane == SettingsPane::Provider {
+                                    app.new_provider_form =
+                                        Some(crate::state::NewProviderForm::new());
+                                } else {
+                                    app.toast
+                                        .info("Switch to the Providers pane to add a new one");
+                                }
+                            }
+                            Action::SettingsDeleteProvider => {
+                                if app.settings_pane == SettingsPane::Provider {
+                                    let id = app
+                                        .providers
+                                        .get(app.settings_selected_provider)
+                                        .map(|p| p.id.clone());
+                                    if let Some(id) = id {
+                                        if app.remove_custom_provider(&id) {
+                                            save_settings(&app.provider_configs, &app.pool_entries);
+                                            let max = app.providers.len().saturating_sub(1);
+                                            if app.settings_selected_provider > max {
+                                                app.settings_selected_provider = max;
+                                            }
+                                            app.toast.info("Custom provider removed");
+                                        } else {
+                                            app.toast
+                                                .warning("Built-in providers cannot be removed");
+                                        }
+                                    }
+                                }
+                            }
+                            Action::SettingsFormCycleField(delta) => {
+                                if let Some(form) = app.new_provider_form.as_mut() {
+                                    form.active_field = if delta > 0 {
+                                        (form.active_field + 1) % 4
+                                    } else {
+                                        (form.active_field + 3) % 4
+                                    };
+                                }
+                            }
+                            Action::SettingsFormCycleType(delta) => {
+                                if let Some(form) = app.new_provider_form.as_mut() {
+                                    if form.active_field == 0 {
+                                        let n = crate::settings::BUILTIN_PROVIDER_TYPES.len();
+                                        if delta > 0 {
+                                            form.type_idx = (form.type_idx + 1) % n;
+                                        } else {
+                                            form.type_idx = (form.type_idx + n - 1) % n;
+                                        }
+                                        form.url_preset_idx = form
+                                            .presets()
+                                            .iter()
+                                            .position(|p| !p.is_custom)
+                                            .unwrap_or(0);
+                                        form.url_custom.clear();
+                                        form.error = None;
+                                    } else if form.active_field == 3 {
+                                        let n = form.presets().len().max(1);
+                                        if delta > 0 {
+                                            form.url_preset_idx = (form.url_preset_idx + 1) % n;
+                                        } else {
+                                            form.url_preset_idx = (form.url_preset_idx + n - 1) % n;
+                                        }
+                                        form.error = None;
+                                    }
+                                }
+                            }
+                            Action::SettingsFormType(c) => {
+                                if let Some(form) = app.new_provider_form.as_mut() {
+                                    form.error = None;
+                                    match form.active_field {
+                                        1 => form.display_name.push(c),
+                                        2 => form.api_key.push(c),
+                                        3 if form.url_is_custom() => form.url_custom.push(c),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Action::SettingsFormBackspace => {
+                                if let Some(form) = app.new_provider_form.as_mut() {
+                                    match form.active_field {
+                                        1 => {
+                                            let _ = form.display_name.pop();
+                                        }
+                                        2 => {
+                                            let _ = form.api_key.pop();
+                                        }
+                                        3 if form.url_is_custom() => {
+                                            let _ = form.url_custom.pop();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Action::SettingsFormSubmit => {
+                                if let Some(form) = app.new_provider_form.take() {
+                                    let ptype =
+                                        crate::settings::BUILTIN_PROVIDER_TYPES[form.type_idx];
+                                    let display_name = form.display_name.trim().to_string();
+                                    let api_key = form.api_key.trim().to_string();
+                                    let base_url = form.resolved_url();
+                                    if display_name.is_empty() {
+                                        app.toast.warning("Display name cannot be empty");
+                                        app.new_provider_form = Some(form);
+                                    } else if api_key.is_empty() {
+                                        app.toast.warning("API key cannot be empty");
+                                        app.new_provider_form = Some(form);
+                                    } else if base_url.is_empty() && form.url_is_custom() {
+                                        app.toast.warning("Custom URL cannot be empty");
+                                        app.new_provider_form = Some(form);
+                                    } else {
+                                        let new_id = app.add_custom_provider(
+                                            display_name.clone(),
+                                            ptype.to_string(),
+                                            api_key,
+                                            base_url,
+                                        );
+                                        save_settings(&app.provider_configs, &app.pool_entries);
+                                        app.toast.success(format!(
+                                            "Added custom provider: {} ({})",
+                                            display_name, ptype
+                                        ));
+                                        if let Some(pos) =
+                                            app.providers.iter().position(|p| p.id == new_id)
+                                        {
+                                            app.settings_selected_provider = pos;
+                                        }
+                                    }
+                                }
+                            }
+                            Action::SettingsFormCancel => {
+                                app.new_provider_form = None;
+                            }
+                            Action::None => {}
                         }
                     }
                     Event::Paste(s) if app.new_provider_form.is_some() => {
@@ -463,7 +484,7 @@ pub async fn run_app(
                         // Forward to the chat panel's mouse
                         // handler. The chat panel returns
                         // `Handled` when the event is over
-        // its area (or the scrollbar) and we should
+                        // its area (or the scrollbar) and we should
                         // mark the frame dirty; `Ignored`
                         // when the click was elsewhere and
                         // other panels might want it (e.g.
@@ -482,11 +503,9 @@ pub async fn run_app(
                                         agent_panel_tui::MouseButton::Left,
                                     )
                                 }
-                                CtMouseEventKind::Down(_) => {
-                                    agent_panel_tui::MouseEventKind::Down(
-                                        agent_panel_tui::MouseButton::Other,
-                                    )
-                                }
+                                CtMouseEventKind::Down(_) => agent_panel_tui::MouseEventKind::Down(
+                                    agent_panel_tui::MouseButton::Other,
+                                ),
                                 _ => agent_panel_tui::MouseEventKind::Other,
                             };
                             // 1 row per wheel notch feels

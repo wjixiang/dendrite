@@ -4,7 +4,9 @@
 
 > 个人项目记录 · 状态:进行中(截至 2026-06)
 
-一个基于 AI Agent 的**树形索引知识管理系统(KMS)**。Agent 通过诊断反馈驱动的方式,在 SQLite 知识树上持续构建、检索、修复结构化知识。设计目标是让知识像神经元一样**沿着索引树的轴突不断延伸**,而不是堆在扁平文档里。
+一个基于 AI Agent 的**树形索引知识管理系统(KMS)** 。Agent 通过诊断反馈驱动的方式,在 SQLite 知识树上持续构建、检索、修复结构化知识。设计目标是让知识像神经元一样**沿着索引树的轴突不断延伸**,而不是堆在扁平文档里。
+
+该项目同时提供了一种新的RAG实现方式——TreeRAG，不依赖嵌入直接通过Agent实现高精度的知识召回，同时利用知识树的特性有效保留了知识单元之间的连接信息。
 
 ![展示图](./docs/demo.png)
 
@@ -47,30 +49,30 @@ Index (索引树骨架)
         └── Knowledge 引用 Entity(≥1 个)
 ```
 
-| 层级 | 角色 | 关键约束 |
-|------|------|---------|
-| **Entity** | 讨论的对象 | 必须有至少一个命名(语言 + 全称 + 可选缩写) |
+| 层级          | 角色           | 关键约束                                                                                                               |
+| ------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Entity**    | 讨论的对象     | 必须有至少一个命名(语言 + 全称 + 可选缩写)                                                                             |
 | **Knowledge** | 关于实体的记录 | `aspect`(单实体切面)或 `relation`(多实体关系);`entities` 字段列出**所有**被提及的实体;内容用 `[[实体名]]` 维基风格标注 |
-| **Index** | 树状组织层 | 兄弟节点抽象级别对等、不重叠;内部节点不直接挂知识 |
+| **Index**     | 树状组织层     | 兄弟节点抽象级别对等、不重叠;内部节点不直接挂知识                                                                      |
 
 **典型组织**:
 
 ```
-心血管疾病
-├── 冠心病
-│   ├── 冠心病 · 定义            ─┐
-│   ├── 冠心病 · 诊断标准         │  Knowledge 节点
-│   ├── 冠心病 · 药物治疗        ─┘
+编程语言
+├── Python
+│   ├── Python · 定义            ─┐
+│   ├── Python · 类型系统         │  Knowledge 节点
+│   ├── Python · 包管理          ─┘
 │   └── ...
-├── 心力衰竭
-│   ├── 急性心力衰竭
-│   │   ├── 急性心力衰竭 · 病因
-│   │   └── 急性心力衰竭 · 药物治疗
-│   └── 慢性心力衰竭
+├── JavaScript
+│   ├── React
+│   │   ├── React · 核心概念
+│   │   └── React · 生态系统
+│   └── Vue.js
 │       └── ...
 ```
 
-知识粒度强制要求**一个标题 = 一个切面**。禁止用"和 / 与 / 及"等连接词合并多个切面("诊断与治疗"、"病因和发病机制"等都视为违规)。这条规则在 system prompt 和 diagnostic 规则中双重强制。
+知识粒度强制要求**一个标题 = 一个切面**。禁止用"和 / 与 / 及"等连接词合并多个切面("安装与配置"、"概念与架构"等都视为违规)。这条规则在 system prompt 和 diagnostic 规则中双重强制。
 
 ---
 
@@ -97,31 +99,31 @@ pub struct Diagnostic {
 
 #### Entity 规则(`crates/kms/src/diagnostics/entity_rules.rs`)
 
-| 规则 | Code | 严重级 | 检测条件 |
-|------|------|--------|----------|
-| `NoNomenclature` | `entity.no_nomenclature` | Error | 实体命名向量为空 |
-| `EmptyDefinition` | `entity.empty_definition` | Warning | 定义字段为空字符串 |
-| `MissingZhNomenclature` | `entity.missing_zh_nomenclature` | Hint | 缺少中文(ZH)命名 |
+| 规则                    | Code                             | 严重级  | 检测条件           |
+| ----------------------- | -------------------------------- | ------- | ------------------ |
+| `NoNomenclature`        | `entity.no_nomenclature`         | Error   | 实体命名向量为空   |
+| `EmptyDefinition`       | `entity.empty_definition`        | Warning | 定义字段为空字符串 |
+| `MissingZhNomenclature` | `entity.missing_zh_nomenclature` | Hint    | 缺少中文(ZH)命名   |
 
 #### Index 规则(`crates/kms/src/diagnostics/index_rules.rs`)
 
-| 规则 | Code | 严重级 | 检测条件 |
-|------|------|--------|----------|
-| `EmptyLeaf` | `index.empty_leaf` | Warning | Group 节点无子节点且无知识关联(depth>0) |
-| `ExcessiveChildren` | `index.excessive_children` | Warning | 子节点数 > 6 |
-| `InconsistentPrefixes` | `index.inconsistent_prefixes` | Hint | Knowledge 子节点标题前缀(`·` 前的实体名)分布零散 |
+| 规则                   | Code                          | 严重级  | 检测条件                                         |
+| ---------------------- | ----------------------------- | ------- | ------------------------------------------------ |
+| `EmptyLeaf`            | `index.empty_leaf`            | Warning | Group 节点无子节点且无知识关联(depth>0)          |
+| `ExcessiveChildren`    | `index.excessive_children`    | Warning | 子节点数 > 6                                     |
+| `InconsistentPrefixes` | `index.inconsistent_prefixes` | Hint    | Knowledge 子节点标题前缀(`·` 前的实体名)分布零散 |
 
 #### Knowledge 规则(`crates/kms/src/diagnostics/knowledge_rules.rs`)
 
-| 规则 | Code | 严重级 | 检测条件 |
-|------|------|--------|----------|
-| `NestedKnowledge` | `knowledge.internal_nested` | Warning | 内容含多个 Markdown 标题(应保持扁平,结构外移到 index) |
-| `VagueTitle` | `knowledge.vague_title` | Warning | 标题后缀含模糊关键词("概述"、"定义"、"简介" 等) |
-| `OrphanKnowledge` | `knowledge.orphan` | (占位) | 当前未启用 |
-| `EmptyContent` | `knowledge.empty_content` | Hint | 内容为空 |
-| `NoEntities` | `knowledge.no_entities` | Warning | 关联实体列表为空 |
-| `BoldAsHeading` | `knowledge.bold_as_heading` | Error | 用 `**粗体**` 独占一行充当标题 |
-| `TitleMissingEntityPrefix` | `knowledge.title_missing_entity_prefix` | Warning | 标题未含 `·` 分隔符(即无实体名前缀) |
+| 规则                       | Code                                    | 严重级  | 检测条件                                              |
+| -------------------------- | --------------------------------------- | ------- | ----------------------------------------------------- |
+| `NestedKnowledge`          | `knowledge.internal_nested`             | Warning | 内容含多个 Markdown 标题(应保持扁平,结构外移到 index) |
+| `VagueTitle`               | `knowledge.vague_title`                 | Warning | 标题后缀含模糊关键词("概述"、"定义"、"简介" 等)       |
+| `OrphanKnowledge`          | `knowledge.orphan`                      | (占位)  | 当前未启用                                            |
+| `EmptyContent`             | `knowledge.empty_content`               | Hint    | 内容为空                                              |
+| `NoEntities`               | `knowledge.no_entities`                 | Warning | 关联实体列表为空                                      |
+| `BoldAsHeading`            | `knowledge.bold_as_heading`             | Error   | 用 `**粗体**` 独占一行充当标题                        |
+| `TitleMissingEntityPrefix` | `knowledge.title_missing_entity_prefix` | Warning | 标题未含 `·` 分隔符(即无实体名前缀)                   |
 
 诊断结果在 TUI 的 `Diagnostics` 面板实时显示,每条都带可执行的 `suggested_actions` (直接告诉 Agent 用哪个 `kms_*` 工具修复)。
 
@@ -131,24 +133,24 @@ pub struct Diagnostic {
 
 `kms_tui` 同时跑三个独立的 Agent,可通过 `[Tab]` 切换上下文焦点:
 
-| 角色 | Crate | 工具子集 | 用途 |
-|------|-------|----------|------|
-| **Compose** | `agent-compose` | 25 个 `kms_*` 工具(含写操作) | 知识**构建**专家。处理知识录入、索引调整、结构修复 |
-| **Retrieval** | `agent-knowledge` | 8 个只读 `kms_*` 工具 | 只读**检索**专家。强制使用并行工具调用,无工具调用时自动结束 |
-| **Parallel** | `agent-compose::ParallelComposeContext` | Compose 工具 + `kms_parallel_dispatch` | **编排**专家。把大任务切分给 N 个子 Agent 并行处理,最后汇总报告 |
+| 角色          | Crate                                   | 工具子集                               | 用途                                                            |
+| ------------- | --------------------------------------- | -------------------------------------- | --------------------------------------------------------------- |
+| **Compose**   | `agent-compose`                         | 25 个 `kms_*` 工具(含写操作)           | 知识**构建**专家。处理知识录入、索引调整、结构修复              |
+| **Retrieval** | `agent-knowledge`                       | 8 个只读 `kms_*` 工具                  | 只读**检索**专家。强制使用并行工具调用,无工具调用时自动结束     |
+| **Parallel**  | `agent-compose::ParallelComposeContext` | Compose 工具 + `kms_parallel_dispatch` | **编排**专家。把大任务切分给 N 个子 Agent 并行处理,最后汇总报告 |
 
 ### Parallel Subtree 编排模式
 
-当用户输入是大块文本(例:上传《内科学》第 10 版整本),单 Agent 串行处理可能跑几个小时。Parallel 模式的做法:
+当用户输入是大块文本(例:上传一整本技术参考书),单 Agent 串行处理可能跑几个小时。Parallel 模式的做法:
 
 ```
 用户输入大文本
     ↓
-Parallel Agent 分析领域边界("心血管"、"呼吸系统"、"消化系统"…)
+Parallel Agent 分析领域边界("编程语言"、"前端框架"、"数据库"…)
     ↓
 调用 kms_parallel_dispatch(subtasks=[
-  { staging_title: "心血管疾病", content: "第 X 章原文..." },
-  { staging_title: "呼吸系统疾病", content: "第 Y 章原文..." },
+  { staging_title: "编程语言", content: "第 X 章原文..." },
+  { staging_title: "前端框架", content: "第 Y 章原文..." },
   ...
 ])
     ↓
@@ -249,12 +251,12 @@ kms_get_knowledge, kms_local, kms_subtree_knowledge, kms_search_subtree
 
 基于 `ratatui` + `crossterm`。多面板布局(vim 风快捷键)。
 
-| 面板 | 内容 |
-|------|------|
-| **Tree**(左上) | 知识树导航,可展开/折叠/跳转 |
-| **Knowledge / Entity**(右上) | 当前选中节点的内容或关联实体详情 |
-| **Agent**(下半屏) | 三个 Agent 的对话 / 工具调用 / 思考过程 |
-| **Diagnostics**(左下) | 实时诊断结果,每条带修复建议 |
+| 面板                         | 内容                                    |
+| ---------------------------- | --------------------------------------- |
+| **Tree**(左上)               | 知识树导航,可展开/折叠/跳转             |
+| **Knowledge / Entity**(右上) | 当前选中节点的内容或关联实体详情        |
+| **Agent**(下半屏)            | 三个 Agent 的对话 / 工具调用 / 思考过程 |
+| **Diagnostics**(左下)        | 实时诊断结果,每条带修复建议             |
 
 `Agent` 面板内嵌 **ParallelPanel**:Parallel agent 跑时实时显示每个子 Agent 的状态、完成度、错误信息。子 Agent 的 LLM 响应**内联**到主面板(可滚动追溯)。
 
@@ -400,9 +402,7 @@ cargo run --release --bin kms-tui
       "base_url": ""
     }
   ],
-  "pool": [
-    { "provider_id": "prov-18b69253390fdd3c", "model": "mimo-v2.5-pro" }
-  ]
+  "pool": [{ "provider_id": "prov-18b69253390fdd3c", "model": "mimo-v2.5-pro" }]
 }
 ```
 

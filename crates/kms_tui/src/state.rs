@@ -220,7 +220,7 @@ pub enum Action {
     None,
     Quit,
     TreeChanged,
-    SubmitAgent(String),
+    SubmitAgent(String, Vec<agent_panel_tui::PasteEntry>),
     OpenSettings,
     SettingsNav(SettingsPane, isize),
     #[allow(dead_code)]
@@ -492,11 +492,16 @@ impl App {
         self.chat_panel.set_input_active(v);
     }
 
-    /// Consume the input text and return it, leaving the buffer
-    /// empty. Used on Enter to hand the text to the submit
-    /// pipeline.
-    pub fn take_agent_input(&mut self) -> String {
-        self.chat_panel.take_input_text()
+    /// Consume the input text and return it together with any
+    /// long-paste entries, leaving the buffer empty.  Used on
+    /// Enter to hand the text (and paste content) to the submit
+    /// pipeline so that pastes can be ingested into the corpus.
+    pub fn take_agent_input_with_pastes(
+        &mut self,
+    ) -> (String, Vec<agent_panel_tui::PasteEntry>) {
+        let pastes = self.chat_panel.pastes().to_vec();
+        let text = self.chat_panel.take_input_text();
+        (text, pastes)
     }
 
     /// Clear the input text but keep the input-mode flag as-is.

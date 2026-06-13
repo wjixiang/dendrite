@@ -123,7 +123,7 @@ fn parse_usize(value: &Value, field: &str) -> Option<usize> {
 /// Vague title suffixes that indicate the aspect is too generic.
 /// Must be kept in sync with `kms::diagnostics::knowledge_rules::VAGUE_TITLE_KEYWORDS`.
 const VAGUE_TITLE_SUFFIXES: &[&str] = &[
-    "概述", "总结", "小结", "定义", "简介", "说明", "介绍", "基本概念", "疾病特征",
+    "概述", "总结", "小结", "定义", "简介", "说明", "介绍", "基本概念", "特征",
 ];
 
 fn validate_knowledge_title(
@@ -134,7 +134,7 @@ fn validate_knowledge_title(
         if suffix.contains(keyword) {
             return Err(format!(
                 "标题 \"{title}\" 的切面描述包含模糊词汇 \"{keyword}\"。\
-                 切面描述必须是具体的方面（如 \"药物治疗\"、\"诊断标准\"、\"发病机制\"），\
+                 切面描述必须是具体的方面（如 \"核心原理\"、\"配置参数\"、\"使用场景\"），\
                  不能使用泛化术语。请选择一个更精确的切面名称后重试。"
             )
             .into());

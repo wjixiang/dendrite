@@ -120,7 +120,7 @@ pub async fn rebuild_all_agents(
     }
 }
 
-pub fn spawn_agent_task(app: &mut App, user_input: String) {
+pub fn spawn_agent_task(app: &mut App, user_input: String, pastes: Vec<agent_panel_tui::PasteEntry>) {
     if app.agent_running {
         return;
     }
@@ -159,14 +159,12 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
         expanded = rebuilt;
     }
 
-    // 2. Pull paste entries from the chat panel. The chat panel
-    //    is now the single source of truth for paste content —
-    //    `app.agent_pastes` is gone. Short pastes are inserted
-    //    verbatim into the input display and have no entry here;
-    //    long pastes have a `[Pasted ~N lines]` placeholder in
-    //    `expanded` and the full content in this list.
-    let pastes: Vec<agent_panel_tui::PasteEntry> =
-        app.chat_panel.pastes().to_vec();
+    // 2. Use the paste entries captured by the Enter key handler
+    //    before `take_input_text()` cleared them.
+    //    Short pastes are inserted verbatim into the input display
+    //    and have no entry here; long pastes have a
+    //    `[Pasted ~N lines]` placeholder in `expanded` and the
+    //    full content in this list.
 
     // 3. Build the ingest queue: every long paste, plus every
     //    long @file. The placeholder is what we'll search for
@@ -204,20 +202,11 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
     //    no replacement is needed for them.
     let mut model_text = expanded;
 
-    // 6. Perform ingestion synchronously (it's fast: just DB
-    //    writes). The agent doesn't start until we're done.
-    let corpus = app.corpus.clone();
-    let corpus_inner = corpus.clone();
+    // 6. Perform ingestion asynchronously so the UI stays
+    //    responsive.  The agent doesn't start until ingestion
+    //    finishes.
+    let corpus_inner = app.corpus.clone();
     let ingest_items = ingest_queue.clone();
-    tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
-            for (_placeholder, content) in &ingest_items {
-                let title = generate_paste_title(content);
-                let _ = corpus_inner.ingest_document(&title, None, content).await;
-            }
-        });
-    });
 
     // 7. Replace each ingest placeholder with a doc pointer
     //    telling the agent how to retrieve the full content
@@ -266,6 +255,13 @@ pub fn spawn_agent_task(app: &mut App, user_input: String) {
     };
 
     tokio::spawn(async move {
+        // Ingest long pastes / @file content into the corpus
+        // before starting the agent.
+        for (_placeholder, content) in &ingest_items {
+            let title = generate_paste_title(content);
+            let _ = corpus_inner.ingest_document(&title, None, content).await;
+        }
+
         let mut agent = agent_arc.lock().await;
         agent.event_tx = Some(tx.clone());
 

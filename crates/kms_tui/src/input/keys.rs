@@ -34,13 +34,13 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> Action {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                let input = app.take_agent_input();
+                let (input, pastes) = app.take_agent_input_with_pastes();
                 if input.is_empty() {
                     app.set_agent_input_active(false);
                     Action::None
                 } else {
                     app.set_agent_input_active(false);
-                    Action::SubmitAgent(input)
+                    Action::SubmitAgent(input, pastes)
                 }
             }
             KeyEvent {

@@ -8,7 +8,7 @@ use agentik_sdk::types::tools::{ToolBuilder, ToolResult};
 /// triggering `on_snapshot_change` injections.
 ///
 /// Path syntax mirrors `kms_move_children` / `kms_move_index`:
-///   - `/循环系统/心力衰竭` — absolute path from the root
+///   - `/编程语言/Python` — absolute path from the root
 ///   - `..` — not allowed (no current-pointer context; use an
 ///     absolute path instead)
 ///   - single segment or `/`-separated segments — supported
@@ -23,8 +23,8 @@ pub fn registration(svc: Arc<kms::KmsService>) -> agentik_core::tools::ToolRegis
          It is the primary structural inspection tool — use it whenever you need to see \
          the shape of a subtree (parent / children / siblings / depth / counts).\n\n\
          Path syntax:\n\
-         - '/心血管/心力衰竭' — absolute path from root\n\
-         - '心力衰竭' or '心血管/心力衰竭' — resolved against the current pointer\n\
+         - '/编程语言/Python' — absolute path from root\n\
+         - 'Python' or '编程语言/Python' — resolved against the current pointer\n\
          - '..' is NOT supported (stateless — supply an absolute path)\n\n\
          If `path` is omitted, returns the local view of the root node.\n\n\
          If `subtree.knowledge_titles.truncated` is `true`, the subtree holds more than \

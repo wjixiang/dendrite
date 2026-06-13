@@ -514,27 +514,27 @@ Within a layer, all sub-agents run **truly in parallel** — independent model c
 
 ## 9. End-to-end example
 
-> **User query**: *"Compare the drug therapies of heart failure and cor pulmonale."*
+> **User query**: *"Compare the architectures of Docker and Kubernetes."*
 
 ### Orchestrator round (BFS agent's LLM)
 
-1. `kms_search_entity("心衰")` → finds entity `心力衰竭`.
-2. `kms_search_entity("肺心病")` → finds entity `肺源性心脏病`.
-3. `kms_local("/心血管/心力衰竭")` → confirms it exists as a group.
-4. `kms_local("/呼吸系统/肺源性心脏病")` → confirms it exists.
-5. Calls `kms_bfs_dispatch(query="对比心衰和肺心病的药物治疗", seed_paths=["/心血管/心力衰竭", "/呼吸系统/肺源性心脏病"])` with all defaults.
+1. `kms_search_entity("Docker")` → finds entity `Docker`.
+2. `kms_search_entity("Kubernetes")` → finds entity `Kubernetes`.
+3. `kms_local("/容器技术/Docker")` → confirms it exists as a group.
+4. `kms_local("/容器技术/Kubernetes")` → confirms it exists.
+5. Calls `kms_bfs_dispatch(query="对比Docker和Kubernetes的架构设计", seed_paths=["/容器技术/Docker", "/容器技术/Kubernetes"])` with all defaults.
 
 ### BFS runtime
 
 **Layer 0** (frontier = the two seed paths):
 
-- Sub-agent A at `/心血管/心力衰竭`:
+- Sub-agent A at `/容器技术/Docker`:
   - `kms_subtree_knowledge(...)` → enumerates titles.
-  - `kms_search_subtree(..., "药物")` → finds 3 titles.
+  - `kms_search_subtree(..., "架构")` → finds 3 titles.
   - `kms_get_knowledge` × 3 in parallel.
-  - Returns 3 evidence items; next_seeds = `["/心血管/心力衰竭/急性", "/心血管/心力衰竭/慢性"]`.
-- Sub-agent B at `/呼吸系统/肺源性心脏病`:
-  - similar; returns 2 evidence items; next_seeds = `["/呼吸系统/肺源性心脏病/急性加重期", "/呼吸系统/肺源性心脏病/稳定期"]`.
+  - Returns 3 evidence items; next_seeds = `["/容器技术/Docker/组件", "/容器技术/Docker/网络"]`.
+- Sub-agent B at `/容器技术/Kubernetes`:
+  - similar; returns 2 evidence items; next_seeds = `["/容器技术/Kubernetes/组件", "/容器技术/Kubernetes/网络"]`.
 - new_evidence_titles = 5 titles; new_hash = H1; stable_rounds = 0.
 
 **Layer 1** (frontier = 4 next_seeds, capped to max_per_layer=4 → all 4):
@@ -545,7 +545,7 @@ Within a layer, all sub-agents run **truly in parallel** — independent model c
 
 **Layer 2** (frontier = seeds from layer 1; some overlap with visited → pruned):
 
-- 2 sub-agents (e.g. acute decompensation sub-trees).
+- 2 sub-agents (e.g. networking sub-trees).
 - +0 new evidence items.
 - new_evidence_titles empty → fall to `frontier_empty` branch (no advance).
 
@@ -554,24 +554,24 @@ Within a layer, all sub-agents run **truly in parallel** — independent model c
 ### Orchestrator final answer (BFS agent's last LLM turn, no tool call)
 
 ```
-Two conditions, two drug-therapy profiles:
+Two container technologies, two architecture profiles:
 
-## 心力衰竭 (Heart failure)
-- 利尿剂: ...  [excerpt from "心力衰竭 · 药物治疗"]
-- ACEI/ARB: ...  [excerpt from "心力衰竭 · 药物分类"]
-- β受体阻滞剂: ...  [excerpt from "心力衰竭 · 用药注意事项"]
-- Source: /心血管/心力衰竭 (3 knowledge entries)
+## Docker
+- Client-Server架构: ...  [excerpt from "Docker · 架构"]
+- 镜像分层: ...  [excerpt from "Docker · 核心概念"]
+- 容器运行时: ...  [excerpt from "Docker · 组件"]
+- Source: /容器技术/Docker (3 knowledge entries)
 
-## 肺源性心脏病 (Cor pulmonale)
-- 控制感染: ...  [excerpt from "肺源性心脏病 · 急性加重期治疗"]
-- 氧疗 + 血管扩张: ...  [excerpt from "肺源性心脏病 · 稳定期治疗"]
-- Source: /呼吸系统/肺源性心脏病 (2 knowledge entries)
+## Kubernetes
+- 控制平面架构: ...  [excerpt from "Kubernetes · 架构"]
+- Pod模型: ...  [excerpt from "Kubernetes · 核心概念"]
+- 声明式配置: ...  [excerpt from "Kubernetes · 设计理念"]
+- Source: /容器技术/Kubernetes (2 knowledge entries)
 
 ## 对比
-Both conditions use diuretics for volume management, but cor pulmonale
-prioritizes treating the underlying pulmonary disease (infection,
-hypoxemia), while heart failure prioritizes neurohormonal blockade
-(ACEI/ARB, β-blockers). ...
+Both technologies use container isolation, but Docker focuses on
+single-host container management, while Kubernetes provides cluster-level
+orchestration with self-healing, scaling, and service discovery. ...
 ```
 
 Every claim cites a knowledge title from the evidence bag.
@@ -612,7 +612,7 @@ Every claim cites a knowledge title from the evidence bag.
 
 ### 11.2 Integration tests
 
-- `kms_bfs_dispatch` end-to-end on a real (in-memory) KMS populated with a small medical tree.
+- `kms_bfs_dispatch` end-to-end on a real (in-memory) KMS populated with a small knowledge tree.
 - `agent-bfs` full agent loop: orchestrator LLM mocked; verify one `kms_bfs_dispatch` call, verify the synthesized final answer cites a known title from the seeded evidence.
 - `kms_tui`: switch to BFS role, send a query, verify the chat panel shows a single `kms_bfs_dispatch` tool call and a final answer.
 

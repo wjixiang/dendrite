@@ -26,7 +26,7 @@ impl SystemPromptBuilder {
     }
 
     pub fn build_identity(mut self) -> Self {
-        self.identity = "你是一位生物医学研究助手。".to_string();
+        self.identity = "你是一位专业的知识管理助手。".to_string();
         self
     }
 

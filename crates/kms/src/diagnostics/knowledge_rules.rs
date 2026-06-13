@@ -92,7 +92,7 @@ impl KnowledgeDiagnosticRule for VagueTitle {
             message: format!("知识标题包含模糊描述 \"{}\"，缺乏针对性", matched),
             suggested_actions: vec![
                 format!(
-                    "将 \"{}\" 替换为更具体的方面描述，如 \"药物治疗\"、\"发病机制\"",
+                    "将 \"{}\" 替换为更具体的方面描述，如 \"核心原理\"、\"使用场景\"",
                     matched
                 ),
                 "知识条目标题应清晰表达该条目涵盖的具体内容".to_string(),
@@ -221,7 +221,7 @@ impl KnowledgeDiagnosticRule for TitleMissingEntityPrefix {
                 severity: Severity::Warning,
                 message: "知识标题未遵循 \"实体名 · 方面描述\" 命名规范".to_string(),
                 suggested_actions: vec![
-                    "知识标题应包含实体名前缀，格式如 \"急性心力衰竭 · 药物治疗\"".to_string(),
+                    "知识标题应包含实体名前缀，格式如 \"React · 核心原理\"".to_string(),
                 ],
             })
         } else {
